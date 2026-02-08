@@ -53,7 +53,6 @@ module.exports = {
   MESSAGES: {
     // Initial reminders (friendly & informative)
     REMINDER_PAGI: [
-      '━━━━━━━━━━━━━━━━━━━━━━━',
       '☀️  *REMINDER ABSEN PAGI*',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
@@ -72,7 +71,6 @@ module.exports = {
     ].join('\n'),
 
     REMINDER_SORE: [
-      '━━━━━━━━━━━━━━━━━━━━━━━',
       '🌆  *REMINDER ABSEN SORE*',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
@@ -149,7 +147,6 @@ module.exports = {
 
     // ─── Registration messages ──────────────────────────────────────
     REGISTRATION_WELCOME: [
-      '━━━━━━━━━━━━━━━━━━━━━━━',
       '👋  *SELAMAT DATANG!*',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
@@ -173,7 +170,6 @@ module.exports = {
 
     // ─── Weekly recap ────────────────────────────────────────────────
     WEEKLY_RECAP_HEADER: [
-      '━━━━━━━━━━━━━━━━━━━━━━━',
       '📊  *REKAP MINGGUAN*',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
