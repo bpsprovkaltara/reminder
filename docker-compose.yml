@@ -1,0 +1,34 @@
+services:
+  reminder-bot:
+    build: .
+    image: bpsprovkaltara/reminder-presensi-bps:latest
+    container_name: bpsprovkaltara-reminder-presensi-bps
+    restart: unless-stopped
+
+    ports:
+      # Health check endpoint
+      - "3000:3000"
+
+    volumes:
+      # WhatsApp session (persist login across restarts)
+      - ./.wwebjs_auth:/app/.wwebjs_auth
+      # WhatsApp cache (speeds up reconnection)
+      - ./.wwebjs_cache:/app/.wwebjs_cache
+      # SQLite database (users, attendance logs)
+      - ./data:/app/data
+
+    environment:
+      # Timezone WITA — penting agar jadwal reminder sesuai
+      - TZ=Asia/Makassar
+
+    # Chromium needs more shared memory than Docker's default 64MB
+    shm_size: '512mb'
+
+    # Give the bot time to gracefully disconnect WhatsApp on stop
+    stop_grace_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

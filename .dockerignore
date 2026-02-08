@@ -1,0 +1,12 @@
+node_modules
+.wwebjs_auth
+.wwebjs_cache
+data
+
+*.log
+.DS_Store
+.git
+.gitignore
+
+CLAUDE.md
+PRD_Reminder_Presensi_BPS_v1.docx
