@@ -261,7 +261,6 @@ async function cmdHelp(message, phone) {
   const user = db.getUser(phone);
 
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '📋  *PANDUAN REMINDER BPS*',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -321,7 +320,6 @@ async function cmdHelp(message, phone) {
 
   lines.push(
     '',
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '❓ *#help* — Tampilkan panduan ini',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -340,7 +338,6 @@ async function cmdStatus(message, phone) {
   const todayDate = time.getCurrentDate();
 
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '📊  *STATUS ABSEN HARI INI*',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -394,7 +391,6 @@ async function cmdJadwal(message, phone) {
   const hariDisplay = hariKerja.map((d) => defaults.HARI_NAMES[d]).join(', ');
 
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '📅  *JADWAL REMINDER*',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -691,7 +687,6 @@ async function cmdRiwayat(message, phone) {
   }
 
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '📜  *RIWAYAT ABSEN*',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -722,7 +717,6 @@ async function cmdUsers(message) {
   }
 
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     `👥  *DAFTAR USER (${users.length})*`,
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
@@ -878,7 +872,6 @@ async function cmdTest(message, phone, parts) {
 
 async function cmdWaktu(message) {
   const lines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━━',
     '🕐  *INFO WAKTU SISTEM*',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
