@@ -27,8 +27,16 @@ services:
     # Give the bot time to gracefully disconnect WhatsApp on stop
     stop_grace_period: 15s
 
+    networks:
+      - proxy_network
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  proxy_network:
+    external: true
+
