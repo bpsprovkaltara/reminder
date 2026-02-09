@@ -116,7 +116,6 @@ async function handleRegistration(message, phone, body) {
 
   // Build welcome message with schedule info
   const welcomeLines = [
-    '━━━━━━━━━━━━━━━━━━━━━━━',
     '✅  *PENDAFTARAN BERHASIL!*',
     '━━━━━━━━━━━━━━━━━━━━━━━',
     '',
