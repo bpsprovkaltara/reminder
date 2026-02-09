@@ -1,4 +1,6 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const time = require('./config/time');
 const defaults = require('./config/defaults');
 
@@ -55,6 +57,22 @@ try {
 } catch (err) {
   console.error('Error:', err.message);
   process.exit(1);
+}
+
+// --- Cleanup stale Chromium lock files ---
+// Prevents "profile in use by another process" error after Docker rebuild
+const authSessionDir = path.join(__dirname, '..', '.wwebjs_auth', 'session-reminder-presensi-bps');
+const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+for (const lockFile of lockFiles) {
+  const lockPath = path.join(authSessionDir, lockFile);
+  try {
+    if (fs.existsSync(lockPath)) {
+      fs.unlinkSync(lockPath);
+      console.log(`[Cleanup] Removed stale lock: ${lockFile}`);
+    }
+  } catch (err) {
+    // Ignore if file doesn't exist or can't be removed
+  }
 }
 
 // --- Boot application ---
