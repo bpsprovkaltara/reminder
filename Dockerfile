@@ -43,6 +43,7 @@ COPY --from=builder /app/node_modules ./node_modules
 # Copy application files
 COPY package*.json ./
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 
 # Create persistent directories
 RUN mkdir -p data .wwebjs_auth .wwebjs_cache
