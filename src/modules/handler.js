@@ -251,10 +251,16 @@ async function handleLeaveFlow(message, phone, body) {
   const user = db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
-  let endDate;
-
   // Parse input
   const input = body.trim();
+
+  // Batalkan flow
+  if (input.toLowerCase() === 'batal' || input.toLowerCase() === 'cancel') {
+    pendingLeaveFlow.delete(phone);
+    return message.reply('✅ Dibatalkan. Reminder tetap aktif.');
+  }
+
+  let endDate;
 
   if (input === '0') {
     // Today only
@@ -725,10 +731,21 @@ async function cmdMaxPengingat(message, phone, parts) {
       + `Saat ini: *${current} pengingat*\n`
       + `(1 reminder utama + ${current} pengingat susulan)\n\n`
       + `Untuk mengubah:\n`
-      + `*#maxpengingat <jumlah>*\n\n`
-      + `_Minimal: 1 (reminder utama + 1 susulan)_\n`
-      + `_Maksimal: 10_\n\n`
+      + `*#maxpengingat <jumlah>*\n`
+      + `*#maxpengingat reset*\n\n`
+      + `_Minimal: 1, Maksimal: 10_\n`
+      + `_Default: ${defaults.DEFAULT_MAX_FOLLOWUPS}_\n\n`
       + `_Contoh: #maxpengingat 5_`
+    );
+  }
+
+  // Reset to default
+  if (parts[1] === 'reset' || parts[1] === 'default') {
+    db.updateUserSetting(phone, 'max_followups', defaults.DEFAULT_MAX_FOLLOWUPS);
+    return message.reply(
+      `✅ Jumlah pengingat susulan dikembalikan ke default (*${defaults.DEFAULT_MAX_FOLLOWUPS}*).\n\n`
+      + `  • 1 reminder utama\n`
+      + `  • ${defaults.DEFAULT_MAX_FOLLOWUPS} pengingat susulan`
     );
   }
 

@@ -190,6 +190,7 @@ module.exports = {
       '  • *Tanggal tertentu* — YYYY-MM-DD',
       '',
       '_Contoh: 2026-02-15 atau ketik 0_',
+      '_Ketik *batal* untuk membatalkan._',
     ].join('\n'),
 
     LEAVE_REGISTERED: [
@@ -212,6 +213,7 @@ module.exports = {
       '  • *YYYY-MM-DD* untuk tanggal tertentu',
       '',
       '_Contoh: 2026-02-15_',
+      '_Ketik *batal* untuk membatalkan._',
     ].join('\n'),
 
     // ─── Weekly recap ────────────────────────────────────────────────
