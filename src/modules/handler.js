@@ -22,16 +22,32 @@ const pendingPauseFlow = new Map();
 const ADMIN_COMMANDS = ['#users', '#adduser', '#removeuser', '#test', '#waktu', '#broadcast', '#libur'];
 
 function setPendingReminder(phone, type) {
-  pendingReminders.set(phone, type);
+  pendingReminders.set(phone, { type, date: time.getCurrentDate() });
 }
 
 function getCurrentReminderType(phone) {
   // Determine type based on pending context or time of day
   if (pendingReminders.has(phone)) {
-    return pendingReminders.get(phone);
+    const pending = pendingReminders.get(phone);
+    // Abaikan reminder dari hari sebelumnya
+    if (pending.date !== time.getCurrentDate()) {
+      pendingReminders.delete(phone);
+    } else {
+      return pending.type;
+    }
   }
   const hour = Number(time.getCurrentTime().split(':')[0]);
   return hour < 12 ? 'pagi' : 'sore';
+}
+
+/**
+ * Clear all stale pending states (called by scheduler at midnight).
+ */
+function clearPendingStates() {
+  pendingReminders.clear();
+  pendingLeaveFlow.clear();
+  pendingPauseFlow.clear();
+  console.log('[Handler] Pending states cleared (daily cleanup).');
 }
 
 async function handleMessage(message) {
@@ -1110,4 +1126,5 @@ async function cmdBroadcast(message, phone, body) {
 module.exports = {
   handleMessage,
   setPendingReminder,
+  clearPendingStates,
 };

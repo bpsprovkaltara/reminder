@@ -10,11 +10,16 @@ const autoResendTimers = new Map(); // key: "phone_type", value: { timer, index,
 let lastCheckedTime = null; // prevent duplicate sends within same simulated minute
 let schedulerRunning = false;
 
-// Callback to set pending reminder context in handler (injected to avoid circular dep)
+// Callbacks injected from index.js to avoid circular dependency with handler
 let _onReminderSent = null;
+let _onDailyCleanup = null;
 
 function onReminderSent(callback) {
   _onReminderSent = callback;
+}
+
+function onDailyCleanup(callback) {
+  _onDailyCleanup = callback;
 }
 
 function startScheduler() {
@@ -40,11 +45,12 @@ function startScheduler() {
     activeJobs.set('main', job);
   }
 
-  // Clean up old snooze data and auto-resend timers daily at midnight
+  // Clean up old snooze data, auto-resend timers, and pending states daily at midnight
   const cleanup = cron.schedule('0 0 * * *', async () => {
     db.resetDailySnooze();
     clearAllAutoResend();
-    console.log('[Scheduler] Daily cleanup: snooze & auto-resend cleared.');
+    if (_onDailyCleanup) _onDailyCleanup();
+    console.log('[Scheduler] Daily cleanup: snooze, auto-resend & pending states cleared.');
   });
   activeJobs.set('cleanup', cleanup);
 
@@ -110,6 +116,10 @@ async function checkAndSendReminders() {
 
   console.log(`[Scheduler] Cek reminder: waktu=${currentTime}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length}`);
 
+  // ─── Phase 1: Collect tasks (synchronous, no await) ──────────────
+  const reminderTasks = [];
+  const recapTasks = [];
+
   for (const user of users) {
     // Skip bot phone (only receives commands, not reminders)
     if (user.phone === defaults.BOT_PHONE) {
@@ -136,9 +146,7 @@ async function checkAndSendReminders() {
     if (currentTime === pagiTime) {
       const existing = db.getAttendanceToday(user.phone, 'pagi');
       if (!existing) {
-        console.log(`[Scheduler] Trigger reminder pagi untuk ${user.phone} (jadwal: ${pagiTime})`);
-        await sendReminder(user.phone, 'pagi', user.name);
-        startAutoResend(user.phone, 'pagi', user.name);
+        reminderTasks.push({ phone: user.phone, type: 'pagi', name: user.name });
       } else {
         console.log(`[Scheduler] Skip pagi ${user.phone} - sudah absen`);
       }
@@ -148,18 +156,47 @@ async function checkAndSendReminders() {
     if (currentTime === soreTime) {
       const existing = db.getAttendanceToday(user.phone, 'sore');
       if (!existing) {
-        console.log(`[Scheduler] Trigger reminder sore untuk ${user.phone} (jadwal: ${soreTime})`);
-        await sendReminder(user.phone, 'sore', user.name);
-        startAutoResend(user.phone, 'sore', user.name);
+        reminderTasks.push({ phone: user.phone, type: 'sore', name: user.name });
       } else {
         console.log(`[Scheduler] Skip sore ${user.phone} - sudah absen`);
-        
+
         // Send weekly recap on Friday after sore confirmation
         if (currentDay === 5) { // Friday
-          await sendWeeklyRecap(user.phone, user.name);
+          recapTasks.push({ phone: user.phone, name: user.name });
         }
       }
     }
+  }
+
+  // ─── Phase 2: Send reminders with staggered delay (non-blocking) ─
+  if (reminderTasks.length > 0) {
+    console.log(`[Scheduler] Mengirim ${reminderTasks.length} reminder...`);
+
+    for (let i = 0; i < reminderTasks.length; i++) {
+      const { phone, type, name } = reminderTasks[i];
+      console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
+
+      // Fire-and-forget: send message then start auto-resend
+      sendReminder(phone, type, name)
+        .then(() => {
+          startAutoResend(phone, type, name);
+        })
+        .catch((err) => {
+          console.error(`[Scheduler] Gagal kirim reminder ${type} ke ${phone}:`, err.message);
+        });
+
+      // Small delay between messages to avoid WhatsApp rate limit
+      if (i < reminderTasks.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
+
+  // ─── Phase 3: Send weekly recaps (non-blocking) ──────────────────
+  for (const { phone, name } of recapTasks) {
+    sendWeeklyRecap(phone, name).catch((err) => {
+      console.error(`[Scheduler] Gagal kirim recap ke ${phone}:`, err.message);
+    });
   }
 }
 
@@ -437,4 +474,5 @@ module.exports = {
   clearAllAutoResend,
   isAutoResendActive,
   onReminderSent,
+  onDailyCleanup,
 };

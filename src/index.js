@@ -140,6 +140,11 @@ scheduler.onReminderSent((phone, type) => {
   handler.setPendingReminder(phone, type);
 });
 
+// Connect scheduler → handler for daily cleanup (midnight)
+scheduler.onDailyCleanup(() => {
+  handler.clearPendingStates();
+});
+
 // Start scheduler when WhatsApp is ready
 client.on('ready', () => {
   // Register primary admin (hardcoded)
