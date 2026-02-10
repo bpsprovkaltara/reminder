@@ -174,7 +174,12 @@ async function sendReminder(phone, type, name) {
     ? defaults.MESSAGES.REMINDER_PAGI
     : defaults.MESSAGES.REMINDER_SORE;
 
+  // Get user's max follow-ups for info in reminder
+  const user = db.getUser(phone);
+  const maxFollowups = user && user.max_followups ? user.max_followups : defaults.DEFAULT_MAX_FOLLOWUPS;
+
   message = message.replace(/\{name\}/g, name || 'kamu');
+  message = message.replace(/\{maxpengingat\}/g, maxFollowups);
 
   const simLabel = time.isSimulated() ? ` (sim: ${time.getCurrentTime()})` : '';
   console.log(`[Scheduler] Kirim reminder ${type} ke ${phone}${simLabel}`);

@@ -18,8 +18,8 @@ module.exports = {
   // After initial reminder, follow-ups are sent at these intervals
   FIBONACCI_INTERVALS: [5, 8, 13, 21, 34, 55, 89, 144, 233, 377],
 
-  // Default max follow-ups (user-configurable, min 1)
-  DEFAULT_MAX_FOLLOWUPS: 10, // Max 10 follow-ups after initial reminder
+  // Default max follow-ups (user-configurable via #maxpengingat, min 1, max 10)
+  DEFAULT_MAX_FOLLOWUPS: 2, // 1 reminder utama + 2 pengingat lanjutan
 
   // Admin configuration
   PRIMARY_ADMIN: '6285155228104', // Admin utama (can send & receive)
@@ -72,7 +72,8 @@ module.exports = {
       '  ✈️ Balas *4* — Perjadin',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
-      '_⏳ Otomatis diingatkan jika belum konfirmasi_',
+      '_⏳ Otomatis diingatkan {maxpengingat}x jika belum konfirmasi_',
+      '_Atur jumlah pengingat: *#maxpengingat*_',
     ].join('\n'),
 
     REMINDER_SORE: [
@@ -92,7 +93,8 @@ module.exports = {
       '  ✈️ Balas *4* — Perjadin',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
-      '_⏳ Otomatis diingatkan jika belum konfirmasi_',
+      '_⏳ Otomatis diingatkan {maxpengingat}x jika belum konfirmasi_',
+      '_Atur jumlah pengingat: *#maxpengingat*_',
     ].join('\n'),
 
     // Tiered follow-up messages (progressively more urgent)

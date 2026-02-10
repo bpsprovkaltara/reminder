@@ -15,6 +15,9 @@ const pendingRegistrations = new Map();
 // Map<phone, { type: 'cuti'|'perjadin', startDate: 'YYYY-MM-DD' }>
 const pendingLeaveFlow = new Map();
 
+// Track users in pause flow (awaiting choice: cuti/perjadin/nonaktifkan)
+const pendingPauseFlow = new Map();
+
 // Commands that require admin role
 const ADMIN_COMMANDS = ['#users', '#adduser', '#removeuser', '#test', '#waktu', '#broadcast', '#libur'];
 
@@ -70,6 +73,12 @@ async function handleMessage(message) {
   // Check if user is in leave flow (awaiting end date)
   if (pendingLeaveFlow.has(phone)) {
     return handleLeaveFlow(message, phone, body);
+  }
+
+  // ─── Pause flow ───────────────────────────────────────────────
+  // Check if user is in pause flow (awaiting choice)
+  if (pendingPauseFlow.has(phone)) {
+    return handlePauseFlow(message, phone, body);
   }
 
   // Check if user exists in database
@@ -805,13 +814,58 @@ async function cmdIzin(message, phone, body) {
 }
 
 async function cmdPause(message, phone) {
-  db.updateUserSetting(phone, 'is_active', 0);
+  const user = db.getUser(phone);
+  const name = user ? user.name : 'kamu';
 
-  // Stop any active auto-resend
-  scheduler.stopAutoResend(phone, 'pagi');
-  scheduler.stopAutoResend(phone, 'sore');
+  const lines = [
+    '⏸️  *NONAKTIFKAN REMINDER*',
+    '━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    `Hai *${name}*, pilih alasan:`,
+    '',
+    '  🏖️ Balas *1* — Cuti',
+    '  ✈️ Balas *2* — Perjalanan Dinas',
+    '━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '_Ketik *batal* untuk membatalkan._',
+  ];
 
-  return message.reply('⏸️ Reminder dinonaktifkan.\n\nKetik *#resume* untuk mengaktifkan kembali.');
+  // Set pending pause flow
+  pendingPauseFlow.set(phone, true);
+
+  return message.reply(lines.join('\n'));
+}
+
+async function handlePauseFlow(message, phone, body) {
+  const input = body.trim().toLowerCase();
+  const user = db.getUser(phone);
+  const name = user ? user.name : 'kamu';
+
+  // Cancel
+  if (input === 'batal' || input === 'cancel') {
+    pendingPauseFlow.delete(phone);
+    return message.reply('✅ Dibatalkan. Reminder tetap aktif.');
+  }
+
+  if (input === '1') {
+    // Cuti → masuk leave flow
+    pendingPauseFlow.delete(phone);
+    return handleQuickLeave(message, phone, 'Cuti');
+  }
+
+  if (input === '2') {
+    // Perjadin → masuk leave flow
+    pendingPauseFlow.delete(phone);
+    return handleQuickLeave(message, phone, 'Perjadin');
+  }
+
+  // Invalid input
+  return message.reply(
+    '⚠️ Pilihan tidak valid.\n\n'
+    + '  🏖️ Balas *1* — Cuti\n'
+    + '  ✈️ Balas *2* — Perjalanan Dinas\n\n'
+    + '_Ketik *batal* untuk membatalkan._'
+  );
 }
 
 async function cmdResume(message, phone) {
