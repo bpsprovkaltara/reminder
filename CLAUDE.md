@@ -42,7 +42,7 @@ data/
 8. **Health Check**: HTTP `/health` endpoint untuk monitoring eksternal
 
 ## Database Schema
-- **users**: phone (PK), name, role, reminder_pagi/sore, jadwal_khusus, hari_kerja, is_active
+- **users**: phone (PK), name, role, reminder_pagi/sore, jadwal_khusus, hari_kerja, is_active, max_followups
 - **attendance_log**: phone, date, type (pagi/sore), confirmed_at, method
 - **leave_requests**: phone, start_date, end_date, reason, status (approved/cancelled)
 - **holidays**: date (PK), name, is_national, created_by
@@ -57,6 +57,12 @@ data/
 - User bisa ubah nama dengan `#nama Nama Baru`
 - Admin-added users skip registration flow
 
+### 1b. User-configurable Follow-ups
+- User bisa atur jumlah pengingat susulan (min: 1, max: 10)
+- Command: `#maxpengingat <jumlah>` (contoh: `#maxpengingat 5`)
+- Default: 10 pengingat susulan
+- Disimpan di kolom `max_followups` per-user
+
 ### 2. Auto-resend (Fibonacci + Tiered Messages)
 - **Intervals**: 5, 8, 13, 21, 34, 55, 89, 144, 233, 377 menit (10 follow-ups)
 - **Tier 1** (1-2): Polite reminder
@@ -70,10 +76,16 @@ data/
 - Jadwal disimpan per-user di kolom `jadwal_khusus` (JSON)
 
 ### 4. Leave Management
-- `#izin 2026-02-10 Sakit` — Lapor cuti/izin/sakit
+- **Command-based**: `#izin 2026-02-10 Sakit` — Lapor cuti/izin/sakit
+- **Quick action**: Balas `3` (Cuti) atau `4` (Perjadin) di pesan reminder
+- **Interactive flow**: Bot minta tanggal akhir setelah quick action
+  - Ketik `0` untuk hari ini saja
+  - Ketik `1` untuk besok
+  - Ketik `YYYY-MM-DD` untuk tanggal tertentu
 - `#izin 2026-02-10..15 Cuti` — Rentang tanggal
 - Reminder otomatis pause di tanggal izin
 - View dengan `#izin` (tanpa parameter)
+- Auto-stop reminder susulan saat cuti/perjadin terdaftar
 
 ### 5. Holiday Management
 - **National holidays**: Auto-sync dari https://libur.deno.dev/ API (daily at 3 AM)
@@ -138,9 +150,10 @@ data/
 - `#hari [1,2,3,4,5]` — Lihat/atur hari kerja
 - `#nama [Nama Baru]` — Lihat/ubah nama
 - `#izin [tanggal alasan]` — Lapor cuti/izin/sakit
+- `#maxpengingat [jumlah]` — Atur jumlah pengingat susulan (min: 1, max: 10)
 - `#pause` / `#resume` — Kontrol reminder
 - `#riwayat` — Riwayat absen 7 hari
-- Quick reply: `1` (konfirmasi), `2` (snooze)
+- Quick reply: `1` (konfirmasi), `2` (snooze), `3` (cuti), `4` (perjadin)
 
 ### Admin Only
 - `#users` — Daftar semua user

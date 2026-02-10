@@ -18,6 +18,9 @@ module.exports = {
   // After initial reminder, follow-ups are sent at these intervals
   FIBONACCI_INTERVALS: [5, 8, 13, 21, 34, 55, 89, 144, 233, 377],
 
+  // Default max follow-ups (user-configurable, min 1)
+  DEFAULT_MAX_FOLLOWUPS: 10, // Max 10 follow-ups after initial reminder
+
   // Admin configuration
   PRIMARY_ADMIN: '6285155228104', // Admin utama (can send & receive)
   BOT_PHONE: '628134247343', // Bot phone (receive only)
@@ -65,6 +68,8 @@ module.exports = {
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '  ✅ Balas *1* — Sudah Absen',
       '  ⏰ Balas *2* — Ingatkan Nanti',
+      '  🏖️ Balas *3* — Cuti',
+      '  ✈️ Balas *4* — Perjadin',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
       '_⏳ Otomatis diingatkan jika belum konfirmasi_',
@@ -83,6 +88,8 @@ module.exports = {
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '  ✅ Balas *1* — Sudah Absen',
       '  ⏰ Balas *2* — Ingatkan Nanti',
+      '  🏖️ Balas *3* — Cuti',
+      '  ✈️ Balas *4* — Perjadin',
       '━━━━━━━━━━━━━━━━━━━━━━━',
       '',
       '_⏳ Otomatis diingatkan jika belum konfirmasi_',
@@ -166,6 +173,43 @@ module.exports = {
       '_Minimal 2 karakter dan bukan angka saja._',
       '',
       '_Contoh: Budi Santoso_',
+    ].join('\n'),
+
+    // ─── Quick leave/perjadin flow ───────────────────────────────────
+    LEAVE_ASK_END_DATE: [
+      '🏖️ *{type}*',
+      '',
+      'Baik, *{name}*.',
+      'Sampai tanggal berapa?',
+      '',
+      '📅 Kirim tanggal akhir:',
+      '  • *Hari ini saja* — ketik *0*',
+      '  • *Besok* — ketik *1*',
+      '  • *Tanggal tertentu* — YYYY-MM-DD',
+      '',
+      '_Contoh: 2026-02-15 atau ketik 0_',
+    ].join('\n'),
+
+    LEAVE_REGISTERED: [
+      '✅ *{type} tercatat*',
+      '',
+      '📅 Periode: *{start}* s/d *{end}*',
+      '',
+      'Reminder otomatis dinonaktifkan',
+      'untuk periode tersebut.',
+      '',
+      '_Selamat beristirahat! 🌴_',
+    ].join('\n'),
+
+    LEAVE_INVALID_DATE: [
+      '⚠️ Format tanggal tidak valid.',
+      '',
+      'Silakan kirim:',
+      '  • *0* untuk hari ini saja',
+      '  • *1* untuk besok',
+      '  • *YYYY-MM-DD* untuk tanggal tertentu',
+      '',
+      '_Contoh: 2026-02-15_',
     ].join('\n'),
 
     // ─── Weekly recap ────────────────────────────────────────────────

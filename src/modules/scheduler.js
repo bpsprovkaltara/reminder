@@ -211,10 +211,14 @@ function startAutoResend(phone, type, name) {
     return;
   }
 
-  const state = { timer: null, index: 0, name: name || 'kamu' };
+  // Get user's max follow-ups setting
+  const user = db.getUser(phone);
+  const maxFollowups = user && user.max_followups ? user.max_followups : defaults.DEFAULT_MAX_FOLLOWUPS;
+
+  const state = { timer: null, index: 0, name: name || 'kamu', maxFollowups };
   autoResendTimers.set(key, state);
 
-  console.log(`[AutoResend] Mulai auto-resend ${type} untuk ${phone} (Fibonacci: ${defaults.FIBONACCI_INTERVALS.join(',')} mnt)`);
+  console.log(`[AutoResend] Mulai auto-resend ${type} untuk ${phone} (max: ${maxFollowups} pengingat, interval Fibonacci)`);
 
   scheduleNextResend(phone, type);
 }
@@ -222,7 +226,7 @@ function startAutoResend(phone, type, name) {
 /**
  * Schedule the next follow-up reminder in the Fibonacci chain.
  * Tier 1 (1-2): Polite reminder
- * Tier 2 (3-5): Direct reminder  
+ * Tier 2 (3-5): Direct reminder
  * Tier 3 (6+): Urgent reminder
  */
 function scheduleNextResend(phone, type) {
@@ -231,17 +235,25 @@ function scheduleNextResend(phone, type) {
   if (!state) return;
 
   const intervals = defaults.FIBONACCI_INTERVALS;
+  const maxFollowups = state.maxFollowups || defaults.DEFAULT_MAX_FOLLOWUPS;
 
-  // All intervals exhausted → stop
+  // User's max follow-ups reached → stop
+  if (state.index >= maxFollowups) {
+    console.log(`[AutoResend] Batas pengingat tercapai (${maxFollowups}x) untuk ${phone} ${type}.`);
+    stopAutoResend(phone, type);
+    return;
+  }
+
+  // Fibonacci intervals exhausted → stop
   if (state.index >= intervals.length) {
-    console.log(`[AutoResend] Semua pengingat selesai untuk ${phone} ${type}.`);
+    console.log(`[AutoResend] Semua interval selesai untuk ${phone} ${type}.`);
     stopAutoResend(phone, type);
     return;
   }
 
   const intervalMin = intervals[state.index];
   const intervalMs = (intervalMin * 60 * 1000) / time.speedMultiplier;
-  const isLast = state.index === intervals.length - 1;
+  const isLast = (state.index === maxFollowups - 1) || (state.index === intervals.length - 1);
   const nextIntervalMin = isLast ? null : intervals[state.index + 1];
 
   console.log(`[AutoResend] Jadwal pengingat ke-${state.index + 1} ${type} untuk ${phone} dalam ${intervalMin} mnt (${Math.round(intervalMs / 1000)}s real)`);
@@ -256,7 +268,7 @@ function scheduleNextResend(phone, type) {
     }
 
     const count = state.index + 1;
-    const total = intervals.length;
+    const total = Math.min(maxFollowups, intervals.length);
 
     // Build footer with next timing info
     let footer;
@@ -300,7 +312,7 @@ function scheduleNextResend(phone, type) {
     // Advance to next interval
     state.index++;
 
-    if (state.index < intervals.length) {
+    if (state.index < maxFollowups && state.index < intervals.length) {
       scheduleNextResend(phone, type);
     } else {
       console.log(`[AutoResend] Semua ${total} pengingat telah dikirim untuk ${phone} ${type}.`);

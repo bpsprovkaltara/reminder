@@ -98,6 +98,12 @@ function initTables() {
     console.log('[DB] Migration: kolom jadwal_khusus ditambahkan.');
   }
 
+  // Migration: add max_followups column
+  if (!columnNames.includes('max_followups')) {
+    db.exec(`ALTER TABLE users ADD COLUMN max_followups INTEGER DEFAULT ${defaults.DEFAULT_MAX_FOLLOWUPS}`);
+    console.log('[DB] Migration: kolom max_followups ditambahkan.');
+  }
+
   // Migration: update old default times
   db.exec(`UPDATE users SET reminder_pagi = '${defaults.REMINDER_PAGI}' WHERE reminder_pagi = '07:30'`);
   db.exec(`UPDATE users SET reminder_sore = '${defaults.REMINDER_SORE}' WHERE reminder_sore = '16:00'`);
@@ -138,7 +144,7 @@ function removeUser(phone) {
 }
 
 function updateUserSetting(phone, field, value) {
-  const allowed = ['reminder_pagi', 'reminder_sore', 'jadwal_khusus', 'hari_kerja', 'is_active', 'role'];
+  const allowed = ['reminder_pagi', 'reminder_sore', 'jadwal_khusus', 'hari_kerja', 'is_active', 'role', 'max_followups'];
   if (!allowed.includes(field)) throw new Error(`Invalid field: ${field}`);
   getDb().prepare(`UPDATE users SET ${field} = ?, updated_at = datetime('now', 'localtime') WHERE phone = ?`).run(value, phone);
   return getUser(phone);

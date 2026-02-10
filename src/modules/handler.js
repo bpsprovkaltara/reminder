@@ -11,6 +11,10 @@ const pendingReminders = new Map();
 // Track users who are in the registration flow (awaiting name input)
 const pendingRegistrations = new Map();
 
+// Track users in leave/perjadin flow (awaiting end date)
+// Map<phone, { type: 'cuti'|'perjadin', startDate: 'YYYY-MM-DD' }>
+const pendingLeaveFlow = new Map();
+
 // Commands that require admin role
 const ADMIN_COMMANDS = ['#users', '#adduser', '#removeuser', '#test', '#waktu', '#broadcast', '#libur'];
 
@@ -62,6 +66,12 @@ async function handleMessage(message) {
     return handleRegistration(message, phone, body);
   }
 
+  // ─── Leave/Perjadin flow ────────────────────────────────────────
+  // Check if user is in leave flow (awaiting end date)
+  if (pendingLeaveFlow.has(phone)) {
+    return handleLeaveFlow(message, phone, body);
+  }
+
   // Check if user exists in database
   const user = db.getUser(phone);
   if (!user) {
@@ -71,12 +81,18 @@ async function handleMessage(message) {
   }
 
   // ─── Existing registered user ──────────────────────────────────
-  // Quick reply: "1" = Sudah Absen, "2" = Ingatkan Nanti
+  // Quick reply: "1" = Sudah Absen, "2" = Ingatkan Nanti, "3" = Cuti, "4" = Perjadin
   if (body === '1') {
     return handleConfirmAbsen(message, phone);
   }
   if (body === '2') {
     return handleSnooze(message, phone);
+  }
+  if (body === '3') {
+    return handleQuickLeave(message, phone, 'Cuti');
+  }
+  if (body === '4') {
+    return handleQuickLeave(message, phone, 'Perjadin');
   }
 
   // Command-based messages
@@ -183,6 +199,80 @@ async function handleSnooze(message, phone) {
   return message.reply(text);
 }
 
+async function handleQuickLeave(message, phone, leaveType) {
+  const user = db.getUser(phone);
+  const name = user ? user.name : 'kamu';
+  const startDate = time.getCurrentDate();
+
+  // Set pending leave flow
+  pendingLeaveFlow.set(phone, { type: leaveType, startDate });
+
+  // Ask for end date
+  const text = defaults.MESSAGES.LEAVE_ASK_END_DATE
+    .replace(/\{type\}/g, leaveType)
+    .replace(/\{name\}/g, name);
+
+  return message.reply(text);
+}
+
+async function handleLeaveFlow(message, phone, body) {
+  const leaveData = pendingLeaveFlow.get(phone);
+  if (!leaveData) {
+    pendingLeaveFlow.delete(phone);
+    return message.reply('⚠️ Sesi expired. Silakan pilih opsi cuti/perjadin lagi.');
+  }
+
+  const { type: leaveType, startDate } = leaveData;
+  const user = db.getUser(phone);
+  const name = user ? user.name : 'kamu';
+
+  let endDate;
+
+  // Parse input
+  const input = body.trim();
+
+  if (input === '0') {
+    // Today only
+    endDate = startDate;
+  } else if (input === '1') {
+    // Tomorrow
+    const tomorrow = new Date(startDate + 'T12:00:00');
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    endDate = tomorrow.toISOString().slice(0, 10);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+    // Full date format
+    endDate = input;
+  } else {
+    // Invalid format
+    return message.reply(defaults.MESSAGES.LEAVE_INVALID_DATE);
+  }
+
+  // Validate end date is not before start date
+  if (endDate < startDate) {
+    return message.reply('⚠️ Tanggal akhir tidak boleh sebelum tanggal mulai.\n\n_Silakan kirim tanggal yang valid._');
+  }
+
+  // Register leave request
+  const reason = leaveType; // Use leave type as reason
+  db.addLeaveRequest(phone, startDate, endDate, reason);
+
+  // Stop auto-resend if active
+  scheduler.stopAutoResend(phone, 'pagi');
+  scheduler.stopAutoResend(phone, 'sore');
+
+  // Clear pending state
+  pendingLeaveFlow.delete(phone);
+  pendingReminders.delete(phone);
+
+  // Send confirmation
+  const text = defaults.MESSAGES.LEAVE_REGISTERED
+    .replace(/\{type\}/g, leaveType)
+    .replace(/\{start\}/g, startDate)
+    .replace(/\{end\}/g, endDate);
+
+  return message.reply(text);
+}
+
 // ─── Command router ──────────────────────────────────────────────
 
 async function handleCommand(message, phone, body) {
@@ -217,6 +307,9 @@ async function handleCommand(message, phone, body) {
 
     case '#izin':
       return cmdIzin(message, phone, body);
+
+    case '#maxpengingat':
+      return cmdMaxPengingat(message, phone, parts);
 
     case '#pause':
       return cmdPause(message, phone);
@@ -288,6 +381,12 @@ async function cmdHelp(message, phone) {
     '  ↳ _Contoh: #izin 2026-02-10 Sakit_',
     '  ↳ _Rentang: #izin 2026-02-10..15 Cuti_',
     '',
+    '🔔 *Pengaturan Reminder*',
+    '• *#maxpengingat* — Lihat/atur',
+    '  ↳ _jumlah pengingat susulan_',
+    '  ↳ _Minimal: 1, Maksimal: 10_',
+    '  ↳ _Contoh: #maxpengingat 5_',
+    '',
     '👤 *Profil*',
     '• *#nama* — Lihat nama kamu',
     '• *#nama Nama Baru*',
@@ -323,8 +422,11 @@ async function cmdHelp(message, phone) {
     '❓ *#help* — Tampilkan panduan ini',
     '━━━━━━━━━━━━━━━━━━━━━━━━',
     '',
-    '_💡 Balas *1* = Sudah Absen_',
-    '_💡 Balas *2* = Ingatkan Nanti_',
+    '💬 *Quick Reply di Reminder:*',
+    '_• Balas *1* = Sudah Absen_',
+    '_• Balas *2* = Ingatkan Nanti_',
+    '_• Balas *3* = Cuti_',
+    '_• Balas *4* = Perjadin_',
   );
 
   return message.reply(lines.join('\n'));
@@ -585,6 +687,43 @@ async function cmdNama(message, phone, body) {
 
   db.upsertUser(phone, nameStr);
   return message.reply(`✅ Nama diperbarui ke *${nameStr}*.`);
+}
+
+async function cmdMaxPengingat(message, phone, parts) {
+  const user = db.getUser(phone);
+  const current = user.max_followups || defaults.DEFAULT_MAX_FOLLOWUPS;
+
+  // Show current setting
+  if (parts.length < 2) {
+    return message.reply(
+      `🔔 *Jumlah Pengingat Susulan*\n\n`
+      + `Saat ini: *${current} pengingat*\n`
+      + `(1 reminder utama + ${current} pengingat susulan)\n\n`
+      + `Untuk mengubah:\n`
+      + `*#maxpengingat <jumlah>*\n\n`
+      + `_Minimal: 1 (reminder utama + 1 susulan)_\n`
+      + `_Maksimal: 10_\n\n`
+      + `_Contoh: #maxpengingat 5_`
+    );
+  }
+
+  const newMax = Number(parts[1]);
+
+  // Validate
+  if (isNaN(newMax) || newMax < 1 || newMax > 10) {
+    return message.reply('⚠️ Jumlah tidak valid.\n\n_Minimal: 1, Maksimal: 10_\n\n_Contoh: #maxpengingat 5_');
+  }
+
+  // Update
+  db.updateUserSetting(phone, 'max_followups', newMax);
+
+  return message.reply(
+    `✅ Jumlah pengingat susulan diatur ke *${newMax}*.\n\n`
+    + `Kamu akan menerima:\n`
+    + `  • 1 reminder utama\n`
+    + `  • ${newMax} pengingat susulan\n\n`
+    + `_Interval: Fibonacci (5, 8, 13, 21, ... menit)_`
+  );
 }
 
 async function cmdIzin(message, phone, body) {
