@@ -7,7 +7,7 @@ const time = require('../config/time');
 
 const activeJobs = new Map();
 const autoResendTimers = new Map(); // key: "phone_type", value: { timer, index, name }
-let lastCheckedTime = null; // prevent duplicate sends within same simulated minute
+let lastCheckedMinute = null; // prevent duplicate sends within same minute
 let schedulerRunning = false;
 
 // Callbacks injected from index.js to avoid circular dependency with handler
@@ -30,20 +30,16 @@ function startScheduler() {
   }
   schedulerRunning = true;
 
-  // In speed mode, check more frequently (every second) so simulated minutes aren't skipped
+  // Use setInterval instead of node-cron for the main check loop.
+  // Chromium (Puppeteer) periodically blocks the event loop for ~700ms,
+  // which triggers false "missed execution" warnings in node-cron.
+  // setInterval has the same behavior without the noisy warnings.
   const interval = time.speedMultiplier > 1
     ? Math.max(1000, Math.floor(60000 / time.speedMultiplier))
     : 60000;
 
-  if (time.speedMultiplier > 1) {
-    // Use setInterval for fast simulation
-    const timer = setInterval(() => checkAndSendReminders(), interval);
-    activeJobs.set('main', { stop: () => clearInterval(timer) });
-  } else {
-    // Use cron for production (every minute)
-    const job = cron.schedule('* * * * *', () => checkAndSendReminders());
-    activeJobs.set('main', job);
-  }
+  const timer = setInterval(() => checkAndSendReminders(), interval);
+  activeJobs.set('main', { stop: () => clearInterval(timer) });
 
   // Clean up old snooze data, auto-resend timers, and pending states daily at midnight
   const cleanup = cron.schedule('0 0 * * *', async () => {
@@ -86,6 +82,43 @@ function startScheduler() {
   }
 }
 
+/**
+ * Returns array of "HH:MM" strings from lastCheckedMinute+1 up to currentTime.
+ * Handles the case where Chromium blocking causes setInterval to skip a minute.
+ * Returns [] if currentTime was already checked (dedup).
+ */
+function getMinutesSinceLastCheck(currentTime) {
+  if (currentTime === lastCheckedMinute) return [];
+
+  const minutes = [];
+
+  if (lastCheckedMinute === null) {
+    // First run — only check current minute
+    minutes.push(currentTime);
+  } else {
+    // Parse last and current into total minutes
+    const [lastH, lastM] = lastCheckedMinute.split(':').map(Number);
+    const [curH, curM] = currentTime.split(':').map(Number);
+    let last = lastH * 60 + lastM;
+    const cur = curH * 60 + curM;
+
+    // Walk from last+1 to current (inclusive), max 5 minutes to avoid runaway
+    const maxCatchup = 5;
+    let count = 0;
+    let t = last + 1;
+    while (t <= cur && count < maxCatchup) {
+      const h = Math.floor(t / 60);
+      const m = t % 60;
+      minutes.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      t++;
+      count++;
+    }
+  }
+
+  lastCheckedMinute = currentTime;
+  return minutes;
+}
+
 async function checkAndSendReminders() {
   if (!wa.getIsReady()) {
     console.log('[Scheduler] WhatsApp belum siap, skip check.');
@@ -96,11 +129,11 @@ async function checkAndSendReminders() {
   const currentDay = time.getCurrentDay();
   const currentDate = time.getCurrentDate();
 
-  // Skip if we already checked this minute (prevents duplicate sends)
-  if (currentTime === lastCheckedTime) return;
-  lastCheckedTime = currentTime;
+  // Build list of minutes to check (current + any skipped due to event loop blocking)
+  const minutesToCheck = getMinutesSinceLastCheck(currentTime);
+  if (minutesToCheck.length === 0) return;
 
-  // Early exit: holiday check (2 queries, quick)
+  // Early exit: holiday check
   if (db.isHoliday(currentDate)) {
     const holidayInfo = db.getHoliday(currentDate);
     console.log(`[Scheduler] Hari ini libur (${holidayInfo.name}), skip reminder.`);
@@ -111,10 +144,13 @@ async function checkAndSendReminders() {
   const users = db.getAllActiveUsers();
   if (users.length === 0) return;
 
-  console.log(`[Scheduler] Cek reminder: waktu=${currentTime}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length}`);
+  if (minutesToCheck.length > 1) {
+    console.log(`[Scheduler] Cek reminder: waktu=${minutesToCheck.join(',')}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length} (caught up ${minutesToCheck.length - 1} missed minute(s))`);
+  } else {
+    console.log(`[Scheduler] Cek reminder: waktu=${currentTime}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length}`);
+  }
 
   // ─── Phase 1: Minimal DB queries, defer attendance checks ──────────
-  // Batch fetch: leaves (1 query) + pre-parse hari_kerja
   const leavePhonesSet = db.getActiveLeavePhones(currentDate);
 
   const reminderTasks = [];
@@ -124,7 +160,6 @@ async function checkAndSendReminders() {
     // Skip bot phone
     if (user.phone === defaults.BOT_PHONE) continue;
 
-    // Parse hari_kerja inline (avoid function call overhead)
     let hariKerja;
     try {
       hariKerja = JSON.parse(user.hari_kerja || '[]');
@@ -141,14 +176,16 @@ async function checkAndSendReminders() {
     const pagiTime = db.getEffectiveReminderTime(user, 'pagi', currentDay);
     const soreTime = db.getEffectiveReminderTime(user, 'sore', currentDay);
 
-    // Only queue if time matches (defer attendance check to async phase)
-    if (currentTime === pagiTime) {
-      reminderTasks.push({ phone: user.phone, type: 'pagi', name: user.name });
-    } else if (currentTime === soreTime) {
-      reminderTasks.push({ phone: user.phone, type: 'sore', name: user.name });
-      // Weekly recap on Friday
-      if (currentDay === 5) {
-        recapTasks.push({ phone: user.phone, name: user.name });
+    // Check all minutes (current + any that were skipped)
+    for (const checkTime of minutesToCheck) {
+      if (checkTime === pagiTime) {
+        reminderTasks.push({ phone: user.phone, type: 'pagi', name: user.name });
+      }
+      if (checkTime === soreTime) {
+        reminderTasks.push({ phone: user.phone, type: 'sore', name: user.name });
+        if (currentDay === 5) {
+          recapTasks.push({ phone: user.phone, name: user.name });
+        }
       }
     }
   }

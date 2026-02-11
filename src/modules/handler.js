@@ -411,6 +411,7 @@ async function cmdHelp(message, phone) {
     '  ↳ _Lapor cuti/izin/sakit_',
     '  ↳ _Contoh: #izin 2026-02-10 Sakit_',
     '  ↳ _Rentang: #izin 2026-02-10..15 Cuti_',
+    '• *#izin batal* — Batalkan izin/cuti',
     '',
     '🔔 *Pengaturan Reminder*',
     '• *#maxpengingat* — Lihat/atur',
@@ -770,6 +771,9 @@ async function cmdMaxPengingat(message, phone, parts) {
 
 async function cmdIzin(message, phone, body) {
   // Format:
+  //   #izin                               → lihat daftar izin
+  //   #izin batal                          → pilih izin untuk dibatalkan
+  //   #izin batal <nomor>                  → batalkan izin tertentu
   //   #izin 2026-02-10 Sakit             → single day
   //   #izin 2026-02-10..15 Cuti tahunan  → date range
   //   #izin 2026-02-10..2026-02-15 Cuti → date range with full dates
@@ -777,28 +781,13 @@ async function cmdIzin(message, phone, body) {
   const text = body.slice('#izin'.length).trim();
   if (!text) {
     // Show current leaves
-    const leaves = db.getAllLeaves(phone);
-    if (leaves.length === 0) {
-      return message.reply(
-        '📝 *Belum ada izin/cuti tercatat*\n\n'
-        + '*Format:*\n'
-        + '• *#izin 2026-02-10 Sakit*\n'
-        + '  ↳ _Izin 1 hari_\n\n'
-        + '• *#izin 2026-02-10..15 Cuti*\n'
-        + '  ↳ _Izin rentang tanggal_'
-      );
-    }
+    return showLeaves(message, phone);
+  }
 
-    const lines = ['📝 *Izin/Cuti Tercatat*', ''];
-    for (const leave of leaves) {
-      const status = leave.status === 'approved' ? '✅' : '❌';
-      if (leave.start_date === leave.end_date) {
-        lines.push(`${status} ${leave.start_date} — ${leave.reason}`);
-      } else {
-        lines.push(`${status} ${leave.start_date} s/d ${leave.end_date} — ${leave.reason}`);
-      }
-    }
-    return message.reply(lines.join('\n'));
+  // Handle: #izin batal / #izin batal <nomor>
+  const lowerText = text.toLowerCase();
+  if (lowerText === 'batal' || lowerText.startsWith('batal ')) {
+    return handleCancelLeave(message, phone, text);
   }
 
   // Parse input
@@ -844,6 +833,97 @@ async function cmdIzin(message, phone, body) {
   } else {
     return message.reply(`✅ Izin/cuti tercatat untuk *${startDate}* s/d *${endDate}*.\n\nAlasan: ${reason}\n\nReminder otomatis dinonaktifkan.`);
   }
+}
+
+async function showLeaves(message, phone) {
+  const leaves = db.getAllLeaves(phone);
+  if (leaves.length === 0) {
+    return message.reply(
+      '📝 *Belum ada izin/cuti tercatat*\n\n'
+      + '*Format:*\n'
+      + '• *#izin 2026-02-10 Sakit*\n'
+      + '  ↳ _Izin 1 hari_\n\n'
+      + '• *#izin 2026-02-10..15 Cuti*\n'
+      + '  ↳ _Izin rentang tanggal_\n\n'
+      + '• *#izin batal*\n'
+      + '  ↳ _Batalkan izin/cuti_'
+    );
+  }
+
+  const lines = ['📝 *Izin/Cuti Tercatat*', ''];
+  for (let i = 0; i < leaves.length; i++) {
+    const leave = leaves[i];
+    const status = leave.status === 'approved' ? '✅' : '❌';
+    const period = leave.start_date === leave.end_date
+      ? leave.start_date
+      : `${leave.start_date} s/d ${leave.end_date}`;
+    lines.push(`${status} *${i + 1}.* ${period} — ${leave.reason}`);
+  }
+
+  const activeCount = leaves.filter(l => l.status === 'approved').length;
+  if (activeCount > 0) {
+    lines.push('', '_Batalkan: *#izin batal*_');
+  }
+
+  return message.reply(lines.join('\n'));
+}
+
+async function handleCancelLeave(message, phone, text) {
+  // Get active (approved) leaves only
+  const leaves = db.getAllLeaves(phone).filter(l => l.status === 'approved');
+
+  if (leaves.length === 0) {
+    return message.reply('📝 Tidak ada izin/cuti aktif yang bisa dibatalkan.');
+  }
+
+  const parts = text.split(/\s+/);
+  const selection = parts[1]; // e.g. "batal 2" → "2"
+
+  // #izin batal → tampilkan daftar untuk dipilih
+  if (!selection) {
+    const lines = [
+      '📝 *Pilih Izin/Cuti untuk Dibatalkan*',
+      '━━━━━━━━━━━━━━━━━━━━━━━━',
+      '',
+    ];
+
+    for (let i = 0; i < leaves.length; i++) {
+      const leave = leaves[i];
+      const period = leave.start_date === leave.end_date
+        ? leave.start_date
+        : `${leave.start_date} s/d ${leave.end_date}`;
+      lines.push(`  *${i + 1}.* ${period} — ${leave.reason}`);
+    }
+
+    lines.push(
+      '',
+      '━━━━━━━━━━━━━━━━━━━━━━━━',
+      '_Ketik *#izin batal <nomor>* untuk membatalkan._',
+      '',
+      `_Contoh: *#izin batal 1*_`,
+    );
+
+    return message.reply(lines.join('\n'));
+  }
+
+  // #izin batal <nomor> → batalkan
+  const idx = Number(selection) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= leaves.length) {
+    return message.reply(`⚠️ Nomor tidak valid. Pilih antara *1* s/d *${leaves.length}*.\n\n_Ketik *#izin batal* untuk melihat daftar._`);
+  }
+
+  const leave = leaves[idx];
+  db.cancelLeave(leave.id, phone);
+
+  const period = leave.start_date === leave.end_date
+    ? leave.start_date
+    : `${leave.start_date} s/d ${leave.end_date}`;
+
+  return message.reply(
+    `✅ Izin/cuti dibatalkan.\n\n`
+    + `❌ *${period}* — ${leave.reason}\n\n`
+    + `Reminder akan aktif kembali untuk periode tersebut.`
+  );
 }
 
 async function cmdPause(message, phone) {
