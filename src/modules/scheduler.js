@@ -100,86 +100,75 @@ async function checkAndSendReminders() {
   if (currentTime === lastCheckedTime) return;
   lastCheckedTime = currentTime;
 
-  // Check if today is a holiday
-  const isHolidayToday = db.isHoliday(currentDate);
-  if (isHolidayToday) {
+  // Early exit: holiday check (2 queries, quick)
+  if (db.isHoliday(currentDate)) {
     const holidayInfo = db.getHoliday(currentDate);
     console.log(`[Scheduler] Hari ini libur (${holidayInfo.name}), skip reminder.`);
     return;
   }
 
+  // Get all active users (1 query)
   const users = db.getAllActiveUsers();
-
-  if (users.length === 0) {
-    return;
-  }
+  if (users.length === 0) return;
 
   console.log(`[Scheduler] Cek reminder: waktu=${currentTime}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length}`);
 
-  // Batch-fetch all phones on leave today (single query instead of N)
+  // ─── Phase 1: Minimal DB queries, defer attendance checks ──────────
+  // Batch fetch: leaves (1 query) + pre-parse hari_kerja
   const leavePhonesSet = db.getActiveLeavePhones(currentDate);
 
-  // ─── Phase 1: Collect tasks (synchronous, no await) ──────────────
   const reminderTasks = [];
   const recapTasks = [];
 
   for (const user of users) {
-    // Skip bot phone (only receives commands, not reminders)
-    if (user.phone === defaults.BOT_PHONE) {
-      continue;
+    // Skip bot phone
+    if (user.phone === defaults.BOT_PHONE) continue;
+
+    // Parse hari_kerja inline (avoid function call overhead)
+    let hariKerja;
+    try {
+      hariKerja = JSON.parse(user.hari_kerja || '[]');
+    } catch {
+      hariKerja = defaults.HARI_KERJA;
     }
 
-    const hariKerja = JSON.parse(user.hari_kerja);
-    if (!hariKerja.includes(currentDay)) {
-      continue;
-    }
+    if (!hariKerja.includes(currentDay)) continue;
 
-    // Check if user is on leave today (using batch Set)
-    if (leavePhonesSet.has(user.phone)) {
-      console.log(`[Scheduler] Skip ${user.phone} - sedang izin/cuti`);
-      continue;
-    }
+    // Skip users on leave
+    if (leavePhonesSet.has(user.phone)) continue;
 
-    // Get effective reminder times for today (may differ from default on certain days)
+    // Get effective reminder times
     const pagiTime = db.getEffectiveReminderTime(user, 'pagi', currentDay);
     const soreTime = db.getEffectiveReminderTime(user, 'sore', currentDay);
 
-    // Check pagi reminder
+    // Only queue if time matches (defer attendance check to async phase)
     if (currentTime === pagiTime) {
-      const existing = db.getAttendanceToday(user.phone, 'pagi');
-      if (!existing) {
-        reminderTasks.push({ phone: user.phone, type: 'pagi', name: user.name });
-      } else {
-        console.log(`[Scheduler] Skip pagi ${user.phone} - sudah absen`);
-      }
-    }
-
-    // Check sore reminder + weekly recap on Friday
-    if (currentTime === soreTime) {
-      const existing = db.getAttendanceToday(user.phone, 'sore');
-      if (!existing) {
-        reminderTasks.push({ phone: user.phone, type: 'sore', name: user.name });
-      } else {
-        console.log(`[Scheduler] Skip sore ${user.phone} - sudah absen`);
-
-        // Send weekly recap on Friday after sore confirmation
-        if (currentDay === 5) { // Friday
-          recapTasks.push({ phone: user.phone, name: user.name });
-        }
+      reminderTasks.push({ phone: user.phone, type: 'pagi', name: user.name });
+    } else if (currentTime === soreTime) {
+      reminderTasks.push({ phone: user.phone, type: 'sore', name: user.name });
+      // Weekly recap on Friday
+      if (currentDay === 5) {
+        recapTasks.push({ phone: user.phone, name: user.name });
       }
     }
   }
 
-  // ─── Phase 2: Send reminders with staggered delay (non-blocking) ─
+  // ─── Phase 2: Send reminders with attendance check inside async ─
   if (reminderTasks.length > 0) {
     console.log(`[Scheduler] Mengirim ${reminderTasks.length} reminder...`);
 
-    // Fire-and-forget with staggered delays to avoid blocking the event loop
     for (let i = 0; i < reminderTasks.length; i++) {
       const { phone, type, name } = reminderTasks[i];
-      const delay = i * 500; // 500ms stagger between each message
+      const delay = i * 500; // Stagger to avoid WhatsApp rate limit
 
       setTimeout(() => {
+        // Check attendance here (not in Phase 1) to avoid blocking cron tick
+        const existing = db.getAttendanceToday(phone, type);
+        if (existing) {
+          console.log(`[Scheduler] Skip ${type} ${phone} - sudah absen`);
+          return;
+        }
+
         console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
         sendReminder(phone, type, name)
           .then(() => {
@@ -192,16 +181,17 @@ async function checkAndSendReminders() {
     }
   }
 
-  // ─── Phase 3: Send weekly recaps (non-blocking) ──────────────────
-  // Stagger after all reminders are dispatched
-  const recapDelay = reminderTasks.length * 500 + 1000;
-  for (let i = 0; i < recapTasks.length; i++) {
-    const { phone, name } = recapTasks[i];
-    setTimeout(() => {
-      sendWeeklyRecap(phone, name).catch((err) => {
-        console.error(`[Scheduler] Gagal kirim recap ke ${phone}:`, err.message);
-      });
-    }, recapDelay + i * 500);
+  // ─── Phase 3: Send weekly recaps ──────────────────────────────────
+  if (recapTasks.length > 0) {
+    const recapDelay = reminderTasks.length * 500 + 1000;
+    for (let i = 0; i < recapTasks.length; i++) {
+      const { phone, name } = recapTasks[i];
+      setTimeout(() => {
+        sendWeeklyRecap(phone, name).catch((err) => {
+          console.error(`[Scheduler] Gagal kirim recap ke ${phone}:`, err.message);
+        });
+      }, recapDelay + i * 500);
+    }
   }
 }
 

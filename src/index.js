@@ -81,6 +81,17 @@ function cleanupLockFiles(dir) {
 }
 cleanupLockFiles(authBaseDir);
 
+// --- Monitor event loop blocking (debug node-cron warnings) ---
+let lastLoopCheck = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const delay = now - lastLoopCheck - 1000; // Expected 1000ms, actual delay
+  if (delay > 50) {
+    console.warn(`[EventLoop] Blocked for ${delay}ms at ${new Date().toISOString()}`);
+  }
+  lastLoopCheck = now;
+}, 1000);
+
 // --- Boot application ---
 const wa = require('./modules/whatsapp');
 const db = require('./db/database');
