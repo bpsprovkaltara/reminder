@@ -58,7 +58,7 @@ function startScheduler() {
   const backupCron = `${defaults.BACKUP_MINUTE} ${defaults.BACKUP_HOUR} * * *`;
   const backup = cron.schedule(backupCron, async () => {
     console.log('[Scheduler] Starting daily database backup...');
-    const backupPath = db.backupDatabase();
+    const backupPath = await db.backupDatabase();
     if (backupPath) {
       console.log(`[Scheduler] Backup successful: ${backupPath}`);
     }
@@ -116,6 +116,9 @@ async function checkAndSendReminders() {
 
   console.log(`[Scheduler] Cek reminder: waktu=${currentTime}, hari=${currentDay}, tanggal=${currentDate}, users=${users.length}`);
 
+  // Batch-fetch all phones on leave today (single query instead of N)
+  const leavePhonesSet = db.getActiveLeavePhones(currentDate);
+
   // ─── Phase 1: Collect tasks (synchronous, no await) ──────────────
   const reminderTasks = [];
   const recapTasks = [];
@@ -131,10 +134,9 @@ async function checkAndSendReminders() {
       continue;
     }
 
-    // Check if user is on leave today
-    const leaves = db.getActiveLeaves(user.phone, currentDate);
-    if (leaves.length > 0) {
-      console.log(`[Scheduler] Skip ${user.phone} - sedang izin/cuti (${leaves[0].reason})`);
+    // Check if user is on leave today (using batch Set)
+    if (leavePhonesSet.has(user.phone)) {
+      console.log(`[Scheduler] Skip ${user.phone} - sedang izin/cuti`);
       continue;
     }
 

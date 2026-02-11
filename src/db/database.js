@@ -8,6 +8,7 @@ const DB_PATH = path.join(__dirname, '..', '..', 'data', 'reminder.db');
 const BACKUP_DIR = path.join(__dirname, '..', '..', 'data', 'backups');
 
 let db;
+let stmts = {};
 
 function getDb() {
   if (!db) {
@@ -16,8 +17,91 @@ function getDb() {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     initTables();
+    prepareStatements();
+    prepareTransactions();
   }
   return db;
+}
+
+function prepareStatements() {
+  stmts = {
+    // User operations
+    getUser: db.prepare('SELECT * FROM users WHERE phone = ?'),
+    upsertUser: db.prepare(`
+      INSERT INTO users (phone, name, role) VALUES (?, ?, ?)
+      ON CONFLICT(phone) DO UPDATE SET name = ?, updated_at = datetime('now', 'localtime')
+    `),
+    getAllActiveUsers: db.prepare('SELECT * FROM users WHERE is_active = 1'),
+    getAllUsers: db.prepare('SELECT * FROM users ORDER BY created_at DESC'),
+    getAllAdmins: db.prepare("SELECT * FROM users WHERE role = 'admin'"),
+    deleteLeaveRequests: db.prepare('DELETE FROM leave_requests WHERE phone = ?'),
+    deleteSnoozeState: db.prepare('DELETE FROM snooze_state WHERE phone = ?'),
+    deleteAttendanceLog: db.prepare('DELETE FROM attendance_log WHERE phone = ?'),
+    deleteUser: db.prepare('DELETE FROM users WHERE phone = ?'),
+    setAdmin: db.prepare("UPDATE users SET role = 'admin', updated_at = datetime('now', 'localtime') WHERE phone = ?"),
+    getAdminPhone: db.prepare("SELECT phone FROM users WHERE role = 'admin' LIMIT 1"),
+
+    // Attendance operations
+    getAttendanceToday: db.prepare('SELECT * FROM attendance_log WHERE phone = ? AND date = ? AND type = ?'),
+    confirmAttendance: db.prepare(`
+      INSERT INTO attendance_log (phone, date, type, confirmed_at, method)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(phone, date, type) DO NOTHING
+    `),
+    getAttendanceHistory: db.prepare('SELECT * FROM attendance_log WHERE phone = ? ORDER BY date DESC, type ASC LIMIT ?'),
+    getAttendanceForDateRange: db.prepare('SELECT * FROM attendance_log WHERE phone = ? AND date >= ? AND date <= ? ORDER BY date, type'),
+    getWeeklyAttendanceSummary: db.prepare(`
+      SELECT
+        u.phone, u.name,
+        COUNT(CASE WHEN a.type = 'pagi' THEN 1 END) as pagi_count,
+        COUNT(CASE WHEN a.type = 'sore' THEN 1 END) as sore_count
+      FROM users u
+      LEFT JOIN attendance_log a ON u.phone = a.phone
+        AND a.date >= ? AND a.date <= ?
+      WHERE u.is_active = 1 AND u.role != 'admin'
+      GROUP BY u.phone, u.name
+      ORDER BY u.name
+    `),
+
+    // Leave operations
+    addLeaveRequest: db.prepare(`
+      INSERT INTO leave_requests (phone, start_date, end_date, reason, status)
+      VALUES (?, ?, ?, ?, 'approved')
+    `),
+    getActiveLeaves: db.prepare(`
+      SELECT * FROM leave_requests
+      WHERE phone = ? AND start_date <= ? AND end_date >= ? AND status = 'approved'
+    `),
+    getActiveLeavePhones: db.prepare(`
+      SELECT DISTINCT phone FROM leave_requests
+      WHERE start_date <= ? AND end_date >= ? AND status = 'approved'
+    `),
+    getAllLeaves: db.prepare('SELECT * FROM leave_requests WHERE phone = ? ORDER BY start_date DESC LIMIT 10'),
+    cancelLeave: db.prepare("UPDATE leave_requests SET status = 'cancelled' WHERE id = ? AND phone = ?"),
+
+    // Holiday operations
+    addHoliday: db.prepare('INSERT OR REPLACE INTO holidays (date, name, is_national, created_by) VALUES (?, ?, ?, ?)'),
+    getHoliday: db.prepare('SELECT * FROM holidays WHERE date = ?'),
+    getUpcomingHolidays: db.prepare('SELECT * FROM holidays WHERE date >= ? ORDER BY date ASC LIMIT ?'),
+    removeHoliday: db.prepare('DELETE FROM holidays WHERE date = ? AND is_national = 0'),
+    deleteNationalHolidays: db.prepare('DELETE FROM holidays WHERE is_national = 1'),
+    insertNationalHoliday: db.prepare('INSERT OR IGNORE INTO holidays (date, name, is_national) VALUES (?, ?, 1)'),
+
+    // Rate limiting
+    getRateLimit: db.prepare('SELECT * FROM rate_limit WHERE phone = ?'),
+    insertRateLimit: db.prepare('INSERT INTO rate_limit (phone, last_message_at, message_count) VALUES (?, ?, 1)'),
+    resetRateLimitWindow: db.prepare('UPDATE rate_limit SET last_message_at = ?, message_count = 1 WHERE phone = ?'),
+    incrementRateLimit: db.prepare('UPDATE rate_limit SET message_count = message_count + 1 WHERE phone = ?'),
+    deleteRateLimit: db.prepare('DELETE FROM rate_limit WHERE phone = ?'),
+
+    // Snooze operations
+    getSnoozeCount: db.prepare('SELECT count FROM snooze_state WHERE phone = ? AND date = ? AND type = ?'),
+    incrementSnooze: db.prepare(`
+      INSERT INTO snooze_state (phone, date, type, count) VALUES (?, ?, ?, 1)
+      ON CONFLICT(phone, date, type) DO UPDATE SET count = count + 1
+    `),
+    resetDailySnooze: db.prepare('DELETE FROM snooze_state WHERE date < ?'),
+  };
 }
 
 function initTables() {
@@ -81,6 +165,13 @@ function initTables() {
     );
   `);
 
+  // --- Indexes for query performance ---
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_attendance_phone_date ON attendance_log(phone, date);
+    CREATE INDEX IF NOT EXISTS idx_leave_active ON leave_requests(phone, status, start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
+  `);
+
   // --- Migrations for existing databases ---
   const columns = db.pragma('table_info(users)');
   const columnNames = columns.map((col) => col.name);
@@ -109,50 +200,97 @@ function initTables() {
   db.exec(`UPDATE users SET reminder_sore = '${defaults.REMINDER_SORE}' WHERE reminder_sore = '16:00'`);
 }
 
+// ─── Transactional helpers ──────────────────────────────────────────
+
+let removeUserTx;
+let syncNationalHolidaysTx;
+let checkRateLimitTx;
+
+function prepareTransactions() {
+  removeUserTx = db.transaction((phone) => {
+    stmts.deleteLeaveRequests.run(phone);
+    stmts.deleteSnoozeState.run(phone);
+    stmts.deleteAttendanceLog.run(phone);
+    stmts.deleteUser.run(phone);
+  });
+
+  syncNationalHolidaysTx = db.transaction((holidays) => {
+    stmts.deleteNationalHolidays.run();
+    for (const h of holidays) {
+      stmts.insertNationalHoliday.run(h.date, h.name);
+    }
+  });
+
+  checkRateLimitTx = db.transaction((phone, maxMessages, windowSeconds) => {
+    const now = Math.floor(Date.now() / 1000);
+    const row = stmts.getRateLimit.get(phone);
+
+    if (!row) {
+      stmts.insertRateLimit.run(phone, now);
+      return { allowed: true, count: 1 };
+    }
+
+    const timeSinceFirst = now - row.last_message_at;
+
+    if (timeSinceFirst > windowSeconds) {
+      stmts.resetRateLimitWindow.run(now, phone);
+      return { allowed: true, count: 1 };
+    }
+
+    if (row.message_count >= maxMessages) {
+      return { allowed: false, count: row.message_count, resetIn: windowSeconds - timeSinceFirst };
+    }
+
+    stmts.incrementRateLimit.run(phone);
+    return { allowed: true, count: row.message_count + 1 };
+  });
+}
+
 // ─── User operations ────────────────────────────────────────────────
 
 function getUser(phone) {
-  return getDb().prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+  getDb();
+  return stmts.getUser.get(phone);
 }
 
 function upsertUser(phone, name, role = 'user') {
-  const stmt = getDb().prepare(`
-    INSERT INTO users (phone, name, role) VALUES (?, ?, ?)
-    ON CONFLICT(phone) DO UPDATE SET name = ?, updated_at = datetime('now', 'localtime')
-  `);
-  stmt.run(phone, name, role, name);
-  return getUser(phone);
+  getDb();
+  stmts.upsertUser.run(phone, name, role, name);
+  return stmts.getUser.get(phone);
 }
 
 function getAllActiveUsers() {
-  return getDb().prepare('SELECT * FROM users WHERE is_active = 1').all();
+  getDb();
+  return stmts.getAllActiveUsers.all();
 }
 
 function getAllUsers() {
-  return getDb().prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+  getDb();
+  return stmts.getAllUsers.all();
 }
 
 function getAllAdmins() {
-  return getDb().prepare("SELECT * FROM users WHERE role = 'admin'").all();
+  getDb();
+  return stmts.getAllAdmins.all();
 }
 
 function removeUser(phone) {
-  getDb().prepare('DELETE FROM leave_requests WHERE phone = ?').run(phone);
-  getDb().prepare('DELETE FROM snooze_state WHERE phone = ?').run(phone);
-  getDb().prepare('DELETE FROM attendance_log WHERE phone = ?').run(phone);
-  getDb().prepare('DELETE FROM users WHERE phone = ?').run(phone);
+  getDb();
+  removeUserTx(phone);
 }
 
 function updateUserSetting(phone, field, value) {
   const allowed = ['reminder_pagi', 'reminder_sore', 'jadwal_khusus', 'hari_kerja', 'is_active', 'role', 'max_followups'];
   if (!allowed.includes(field)) throw new Error(`Invalid field: ${field}`);
+  // Dynamic field — can't be pre-prepared
   getDb().prepare(`UPDATE users SET ${field} = ?, updated_at = datetime('now', 'localtime') WHERE phone = ?`).run(value, phone);
-  return getUser(phone);
+  return stmts.getUser.get(phone);
 }
 
 function setAdmin(phone) {
-  getDb().prepare(`UPDATE users SET role = 'admin', updated_at = datetime('now', 'localtime') WHERE phone = ?`).run(phone);
-  return getUser(phone);
+  getDb();
+  stmts.setAdmin.run(phone);
+  return stmts.getUser.get(phone);
 }
 
 function isAdmin(phone) {
@@ -161,7 +299,8 @@ function isAdmin(phone) {
 }
 
 function getAdminPhone() {
-  const admin = getDb().prepare("SELECT phone FROM users WHERE role = 'admin' LIMIT 1").get();
+  getDb();
+  const admin = stmts.getAdminPhone.get();
   return admin ? admin.phone : null;
 }
 
@@ -185,205 +324,145 @@ function getEffectiveReminderTime(user, type, day) {
 // ─── Attendance log operations ──────────────────────────────────────
 
 function getAttendanceToday(phone, type) {
+  getDb();
   const today = time.getCurrentDate();
-  return getDb().prepare(
-    'SELECT * FROM attendance_log WHERE phone = ? AND date = ? AND type = ?'
-  ).get(phone, today, type);
+  return stmts.getAttendanceToday.get(phone, today, type);
 }
 
 function confirmAttendance(phone, type, method = 'manual') {
+  getDb();
   const today = time.getCurrentDate();
   const now = time.getConfirmationTime();
-  const stmt = getDb().prepare(`
-    INSERT INTO attendance_log (phone, date, type, confirmed_at, method)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(phone, date, type) DO NOTHING
-  `);
-  stmt.run(phone, today, type, now, method);
-  return getAttendanceToday(phone, type);
+  stmts.confirmAttendance.run(phone, today, type, now, method);
+  return stmts.getAttendanceToday.get(phone, today, type);
 }
 
 function getAttendanceHistory(phone, limit = 14) {
-  return getDb().prepare(
-    'SELECT * FROM attendance_log WHERE phone = ? ORDER BY date DESC, type ASC LIMIT ?'
-  ).all(phone, limit);
+  getDb();
+  return stmts.getAttendanceHistory.all(phone, limit);
 }
 
 function getAttendanceForDateRange(phone, startDate, endDate) {
-  return getDb().prepare(
-    'SELECT * FROM attendance_log WHERE phone = ? AND date >= ? AND date <= ? ORDER BY date, type'
-  ).all(phone, startDate, endDate);
+  getDb();
+  return stmts.getAttendanceForDateRange.all(phone, startDate, endDate);
 }
 
 function getWeeklyAttendanceSummary(startDate, endDate) {
-  return getDb().prepare(`
-    SELECT 
-      u.phone, u.name,
-      COUNT(CASE WHEN a.type = 'pagi' THEN 1 END) as pagi_count,
-      COUNT(CASE WHEN a.type = 'sore' THEN 1 END) as sore_count
-    FROM users u
-    LEFT JOIN attendance_log a ON u.phone = a.phone 
-      AND a.date >= ? AND a.date <= ?
-    WHERE u.is_active = 1 AND u.role != 'admin'
-    GROUP BY u.phone, u.name
-    ORDER BY u.name
-  `).all(startDate, endDate);
+  getDb();
+  return stmts.getWeeklyAttendanceSummary.all(startDate, endDate);
 }
 
 // ─── Leave request operations ───────────────────────────────────────
 
 function addLeaveRequest(phone, startDate, endDate, reason) {
-  const stmt = getDb().prepare(`
-    INSERT INTO leave_requests (phone, start_date, end_date, reason, status)
-    VALUES (?, ?, ?, ?, 'approved')
-  `);
-  const result = stmt.run(phone, startDate, endDate, reason);
+  getDb();
+  const result = stmts.addLeaveRequest.run(phone, startDate, endDate, reason);
   return result.lastInsertRowid;
 }
 
 function getActiveLeaves(phone, date) {
-  return getDb().prepare(
-    `SELECT * FROM leave_requests 
-     WHERE phone = ? AND start_date <= ? AND end_date >= ? AND status = 'approved'`
-  ).all(phone, date, date);
+  getDb();
+  return stmts.getActiveLeaves.all(phone, date, date);
+}
+
+function getActiveLeavePhones(date) {
+  getDb();
+  const rows = stmts.getActiveLeavePhones.all(date, date);
+  return new Set(rows.map(r => r.phone));
 }
 
 function getAllLeaves(phone) {
-  return getDb().prepare(
-    'SELECT * FROM leave_requests WHERE phone = ? ORDER BY start_date DESC LIMIT 10'
-  ).all(phone);
+  getDb();
+  return stmts.getAllLeaves.all(phone);
 }
 
 function cancelLeave(leaveId, phone) {
-  getDb().prepare(
-    'UPDATE leave_requests SET status = \'cancelled\' WHERE id = ? AND phone = ?'
-  ).run(leaveId, phone);
+  getDb();
+  stmts.cancelLeave.run(leaveId, phone);
 }
 
 // ─── Holiday operations ─────────────────────────────────────────────
 
 function addHoliday(date, name, isNational = false, createdBy = null) {
-  const stmt = getDb().prepare(`
-    INSERT OR REPLACE INTO holidays (date, name, is_national, created_by)
-    VALUES (?, ?, ?, ?)
-  `);
-  stmt.run(date, name, isNational ? 1 : 0, createdBy);
+  getDb();
+  stmts.addHoliday.run(date, name, isNational ? 1 : 0, createdBy);
 }
 
 function isHoliday(date) {
-  const row = getDb().prepare('SELECT * FROM holidays WHERE date = ?').get(date);
-  return !!row;
+  getDb();
+  return !!stmts.getHoliday.get(date);
 }
 
 function getHoliday(date) {
-  return getDb().prepare('SELECT * FROM holidays WHERE date = ?').get(date);
+  getDb();
+  return stmts.getHoliday.get(date);
 }
 
 function getUpcomingHolidays(limit = 10) {
+  getDb();
   const today = time.getCurrentDate();
-  return getDb().prepare(
-    'SELECT * FROM holidays WHERE date >= ? ORDER BY date ASC LIMIT ?'
-  ).all(today, limit);
+  return stmts.getUpcomingHolidays.all(today, limit);
 }
 
 function removeHoliday(date) {
-  getDb().prepare('DELETE FROM holidays WHERE date = ? AND is_national = 0').run(date);
+  getDb();
+  stmts.removeHoliday.run(date);
 }
 
 function syncNationalHolidays(holidays) {
-  // Clear old national holidays
-  getDb().prepare('DELETE FROM holidays WHERE is_national = 1').run();
-  
-  // Insert new national holidays
-  const stmt = getDb().prepare(`
-    INSERT OR IGNORE INTO holidays (date, name, is_national)
-    VALUES (?, ?, 1)
-  `);
-
-  for (const holiday of holidays) {
-    stmt.run(holiday.date, holiday.name);
-  }
+  getDb();
+  syncNationalHolidaysTx(holidays);
 }
 
 // ─── Rate limiting ──────────────────────────────────────────────────
 
 function checkRateLimit(phone, maxMessages, windowSeconds) {
-  const now = Math.floor(Date.now() / 1000);
-  const row = getDb().prepare('SELECT * FROM rate_limit WHERE phone = ?').get(phone);
-
-  if (!row) {
-    // First message
-    getDb().prepare('INSERT INTO rate_limit (phone, last_message_at, message_count) VALUES (?, ?, 1)')
-      .run(phone, now);
-    return { allowed: true, count: 1 };
-  }
-
-  const timeSinceFirst = now - row.last_message_at;
-
-  if (timeSinceFirst > windowSeconds) {
-    // Window expired, reset
-    getDb().prepare('UPDATE rate_limit SET last_message_at = ?, message_count = 1 WHERE phone = ?')
-      .run(now, phone);
-    return { allowed: true, count: 1 };
-  }
-
-  if (row.message_count >= maxMessages) {
-    // Rate limit exceeded
-    return { allowed: false, count: row.message_count, resetIn: windowSeconds - timeSinceFirst };
-  }
-
-  // Increment count
-  getDb().prepare('UPDATE rate_limit SET message_count = message_count + 1 WHERE phone = ?')
-    .run(phone);
-  return { allowed: true, count: row.message_count + 1 };
+  getDb();
+  return checkRateLimitTx(phone, maxMessages, windowSeconds);
 }
 
 function resetRateLimit(phone) {
-  getDb().prepare('DELETE FROM rate_limit WHERE phone = ?').run(phone);
+  getDb();
+  stmts.deleteRateLimit.run(phone);
 }
 
 // ─── Snooze operations ──────────────────────────────────────────────
 
 function getSnoozeCount(phone, type) {
+  getDb();
   const today = time.getCurrentDate();
-  const row = getDb().prepare(
-    'SELECT count FROM snooze_state WHERE phone = ? AND date = ? AND type = ?'
-  ).get(phone, today, type);
+  const row = stmts.getSnoozeCount.get(phone, today, type);
   return row ? row.count : 0;
 }
 
 function incrementSnooze(phone, type) {
+  getDb();
   const today = time.getCurrentDate();
-  getDb().prepare(`
-    INSERT INTO snooze_state (phone, date, type, count) VALUES (?, ?, ?, 1)
-    ON CONFLICT(phone, date, type) DO UPDATE SET count = count + 1
-  `).run(phone, today, type);
+  stmts.incrementSnooze.run(phone, today, type);
   return getSnoozeCount(phone, type);
 }
 
 function resetDailySnooze() {
+  getDb();
   const today = time.getCurrentDate();
-  getDb().prepare('DELETE FROM snooze_state WHERE date < ?').run(today);
+  stmts.resetDailySnooze.run(today);
 }
 
 // ─── Database backup ────────────────────────────────────────────────
 
-function backupDatabase() {
+async function backupDatabase() {
   try {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const backupPath = path.join(BACKUP_DIR, `reminder-${timestamp}.db`);
-    
-    // Close WAL mode temporarily for clean backup
-    db.pragma('wal_checkpoint(TRUNCATE)');
-    
-    // Copy database file
-    fs.copyFileSync(DB_PATH, backupPath);
-    
+
+    // Use native better-sqlite3 backup API (atomic, WAL-safe)
+    await db.backup(backupPath);
+
     console.log(`[DB] Backup created: ${backupPath}`);
-    
+
     // Clean old backups (keep last 7 days)
     cleanOldBackups();
-    
+
     return backupPath;
   } catch (err) {
     console.error('[DB] Backup failed:', err.message);
@@ -434,6 +513,7 @@ module.exports = {
   getWeeklyAttendanceSummary,
   addLeaveRequest,
   getActiveLeaves,
+  getActiveLeavePhones,
   getAllLeaves,
   cancelLeave,
   addHoliday,
