@@ -174,31 +174,34 @@ async function checkAndSendReminders() {
   if (reminderTasks.length > 0) {
     console.log(`[Scheduler] Mengirim ${reminderTasks.length} reminder...`);
 
+    // Fire-and-forget with staggered delays to avoid blocking the event loop
     for (let i = 0; i < reminderTasks.length; i++) {
       const { phone, type, name } = reminderTasks[i];
-      console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
+      const delay = i * 500; // 500ms stagger between each message
 
-      // Fire-and-forget: send message then start auto-resend
-      sendReminder(phone, type, name)
-        .then(() => {
-          startAutoResend(phone, type, name);
-        })
-        .catch((err) => {
-          console.error(`[Scheduler] Gagal kirim reminder ${type} ke ${phone}:`, err.message);
-        });
-
-      // Small delay between messages to avoid WhatsApp rate limit
-      if (i < reminderTasks.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      setTimeout(() => {
+        console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
+        sendReminder(phone, type, name)
+          .then(() => {
+            startAutoResend(phone, type, name);
+          })
+          .catch((err) => {
+            console.error(`[Scheduler] Gagal kirim reminder ${type} ke ${phone}:`, err.message);
+          });
+      }, delay);
     }
   }
 
   // ─── Phase 3: Send weekly recaps (non-blocking) ──────────────────
-  for (const { phone, name } of recapTasks) {
-    sendWeeklyRecap(phone, name).catch((err) => {
-      console.error(`[Scheduler] Gagal kirim recap ke ${phone}:`, err.message);
-    });
+  // Stagger after all reminders are dispatched
+  const recapDelay = reminderTasks.length * 500 + 1000;
+  for (let i = 0; i < recapTasks.length; i++) {
+    const { phone, name } = recapTasks[i];
+    setTimeout(() => {
+      sendWeeklyRecap(phone, name).catch((err) => {
+        console.error(`[Scheduler] Gagal kirim recap ke ${phone}:`, err.message);
+      });
+    }, recapDelay + i * 500);
   }
 }
 
