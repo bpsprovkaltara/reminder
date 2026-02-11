@@ -61,19 +61,25 @@ try {
 
 // --- Cleanup stale Chromium lock files ---
 // Prevents "profile in use by another process" error after Docker rebuild
-const authSessionDir = path.join(__dirname, '..', '.wwebjs_auth', 'session-reminder-presensi-bps');
-const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-for (const lockFile of lockFiles) {
-  const lockPath = path.join(authSessionDir, lockFile);
+const authBaseDir = path.join(__dirname, '..', '.wwebjs_auth');
+const lockFileNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+function cleanupLockFiles(dir) {
   try {
-    if (fs.existsSync(lockPath)) {
-      fs.unlinkSync(lockPath);
-      console.log(`[Cleanup] Removed stale lock: ${lockFile}`);
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        cleanupLockFiles(fullPath);
+      } else if (lockFileNames.includes(entry.name)) {
+        fs.unlinkSync(fullPath);
+        console.log(`[Cleanup] Removed stale lock: ${fullPath}`);
+      }
     }
   } catch (err) {
-    // Ignore if file doesn't exist or can't be removed
+    // Ignore if can't read/remove
   }
 }
+cleanupLockFiles(authBaseDir);
 
 // --- Boot application ---
 const wa = require('./modules/whatsapp');
