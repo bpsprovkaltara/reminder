@@ -1,14 +1,9 @@
 # ── Build stage ──────────────────────────────────────────────────────
-# Compile native modules (better-sqlite3) with build tools
 FROM node:20-bookworm-slim AS builder
 
 LABEL org.opencontainers.image.title="BPS Prov Kaltara - Reminder Presensi"
 LABEL org.opencontainers.image.description="WhatsApp bot untuk reminder presensi pegawai BPS Provinsi Kalimantan Utara"
 LABEL org.opencontainers.image.vendor="BPS Provinsi Kalimantan Utara"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -22,12 +17,13 @@ RUN npm ci --omit=dev
 # ── Production stage ─────────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
-# Install system Chromium + fonts + dumb-init for signal handling
+# Install system Chromium + fonts + dumb-init + pg client for backups
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-freefont-ttf \
     fonts-noto-color-emoji \
     dumb-init \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure Puppeteer to use system Chromium (not bundled)

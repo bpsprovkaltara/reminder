@@ -9,6 +9,7 @@ const activeJobs = new Map();
 const autoResendTimers = new Map(); // key: "phone_type", value: { timer, index, name }
 let lastCheckedMinute = null; // prevent duplicate sends within same minute
 let schedulerRunning = false;
+let statusPostedToday = { pagi: null, sore: null }; // track status posts per day
 
 // Callbacks injected from index.js to avoid circular dependency with handler
 let _onReminderSent = null;
@@ -43,10 +44,11 @@ function startScheduler() {
 
   // Clean up old snooze data, auto-resend timers, and pending states daily at midnight
   const cleanup = cron.schedule('0 0 * * *', async () => {
-    db.resetDailySnooze();
+    await db.resetDailySnooze();
     clearAllAutoResend();
+    statusPostedToday = { pagi: null, sore: null };
     if (_onDailyCleanup) _onDailyCleanup();
-    console.log('[Scheduler] Daily cleanup: snooze, auto-resend & pending states cleared.');
+    console.log('[Scheduler] Daily cleanup: snooze, auto-resend, status & pending states cleared.');
   });
   activeJobs.set('cleanup', cleanup);
 
@@ -134,14 +136,37 @@ async function checkAndSendReminders() {
   if (minutesToCheck.length === 0) return;
 
   // Early exit: holiday check
-  if (db.isHoliday(currentDate)) {
-    const holidayInfo = db.getHoliday(currentDate);
+  if (await db.isHoliday(currentDate)) {
+    const holidayInfo = await db.getHoliday(currentDate);
     console.log(`[Scheduler] Hari ini libur (${holidayInfo.name}), skip reminder.`);
     return;
   }
 
+  // ─── Post WhatsApp Status at default reminder times ──────────────
+  const defaultPagi = await db.getDefaultReminderPagi();
+  const defaultSore = await db.getDefaultReminderSore();
+
+  // Reset status tracking on new day
+  if (statusPostedToday.pagi && statusPostedToday.pagi !== currentDate) {
+    statusPostedToday = { pagi: null, sore: null };
+  }
+
+  // Only post on workdays (Mon-Fri)
+  if (currentDay >= 1 && currentDay <= 5) {
+    for (const checkTime of minutesToCheck) {
+      if (checkTime === defaultPagi && statusPostedToday.pagi !== currentDate) {
+        statusPostedToday.pagi = currentDate;
+        postWhatsAppStatus('pagi', currentDate, checkTime);
+      }
+      if (checkTime === defaultSore && statusPostedToday.sore !== currentDate) {
+        statusPostedToday.sore = currentDate;
+        postWhatsAppStatus('sore', currentDate, checkTime);
+      }
+    }
+  }
+
   // Get all active users (1 query)
-  const users = db.getAllActiveUsers();
+  const users = await db.getAllActiveUsers();
   if (users.length === 0) return;
 
   if (minutesToCheck.length > 1) {
@@ -151,7 +176,7 @@ async function checkAndSendReminders() {
   }
 
   // ─── Phase 1: Minimal DB queries, defer attendance checks ──────────
-  const leavePhonesSet = db.getActiveLeavePhones(currentDate);
+  const leavePhonesSet = await db.getActiveLeavePhones(currentDate);
 
   const reminderTasks = [];
   const recapTasks = [];
@@ -198,22 +223,20 @@ async function checkAndSendReminders() {
       const { phone, type, name } = reminderTasks[i];
       const delay = i * 500; // Stagger to avoid WhatsApp rate limit
 
-      setTimeout(() => {
-        // Check attendance here (not in Phase 1) to avoid blocking cron tick
-        const existing = db.getAttendanceToday(phone, type);
-        if (existing) {
-          console.log(`[Scheduler] Skip ${type} ${phone} - sudah absen`);
-          return;
-        }
+      setTimeout(async () => {
+        try {
+          const existing = await db.getAttendanceToday(phone, type);
+          if (existing) {
+            console.log(`[Scheduler] Skip ${type} ${phone} - sudah absen`);
+            return;
+          }
 
-        console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
-        sendReminder(phone, type, name)
-          .then(() => {
-            startAutoResend(phone, type, name);
-          })
-          .catch((err) => {
-            console.error(`[Scheduler] Gagal kirim reminder ${type} ke ${phone}:`, err.message);
-          });
+          console.log(`[Scheduler] Trigger reminder ${type} untuk ${phone} (${i + 1}/${reminderTasks.length})`);
+          await sendReminder(phone, type, name);
+          startAutoResend(phone, type, name);
+        } catch (err) {
+          console.error(`[Scheduler] Gagal kirim reminder ${type} ke ${phone}:`, err.message);
+        }
       }, delay);
     }
   }
@@ -244,7 +267,7 @@ async function sendReminder(phone, type, name) {
     : defaults.MESSAGES.REMINDER_SORE;
 
   // Get user's max follow-ups for info in reminder
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const maxFollowups = user && user.max_followups ? user.max_followups : defaults.DEFAULT_MAX_FOLLOWUPS;
 
   message = message.replace(/\{name\}/g, name || 'kamu');
@@ -266,6 +289,34 @@ async function sendReminder(phone, type, name) {
   }
 }
 
+// ─── WhatsApp Status posting ────────────────────────────────────────
+
+/**
+ * Post a WhatsApp Status (Story) for pagi/sore reminder.
+ * @param {string} type - 'pagi' or 'sore'
+ * @param {string} date - Current date (YYYY-MM-DD)
+ * @param {string} timeStr - Current time (HH:MM)
+ */
+function postWhatsAppStatus(type, date, timeStr) {
+  // Small delay so it doesn't race with other startup tasks
+  setTimeout(async () => {
+    try {
+      const template = type === 'pagi'
+        ? defaults.MESSAGES.STATUS_PAGI
+        : defaults.MESSAGES.STATUS_SORE;
+
+      const message = template
+        .replace(/\{date\}/g, date)
+        .replace(/\{time\}/g, timeStr);
+
+      await wa.sendStatus(message);
+      console.log(`[Status] WhatsApp Status ${type} diposting (${date} ${timeStr}).`);
+    } catch (err) {
+      console.error(`[Status] Gagal posting status ${type}:`, err.message);
+    }
+  }, 2000);
+}
+
 // ─── Auto-resend with Fibonacci intervals & tiered messages ─────────
 
 /**
@@ -276,7 +327,7 @@ async function sendReminder(phone, type, name) {
  * @param {string} type - 'pagi' or 'sore'
  * @param {string} [name] - User's name for personalization
  */
-function startAutoResend(phone, type, name) {
+async function startAutoResend(phone, type, name) {
   const key = `${phone}_${type}`;
 
   // Don't restart if already running
@@ -286,7 +337,7 @@ function startAutoResend(phone, type, name) {
   }
 
   // Get user's max follow-ups setting
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const maxFollowups = user && user.max_followups ? user.max_followups : defaults.DEFAULT_MAX_FOLLOWUPS;
 
   const state = { timer: null, index: 0, name: name || 'kamu', maxFollowups };
@@ -333,64 +384,64 @@ function scheduleNextResend(phone, type) {
   console.log(`[AutoResend] Jadwal pengingat ke-${state.index + 1} ${type} untuk ${phone} dalam ${intervalMin} mnt (${Math.round(intervalMs / 1000)}s real)`);
 
   state.timer = setTimeout(async () => {
-    // Check if already confirmed
-    const existing = db.getAttendanceToday(phone, type);
-    if (existing) {
-      console.log(`[AutoResend] ${phone} ${type} sudah dikonfirmasi, stop.`);
-      stopAutoResend(phone, type);
-      return;
-    }
-
-    const count = state.index + 1;
-    const total = Math.min(maxFollowups, intervals.length);
-
-    // Build footer with next timing info
-    let footer;
-    if (isLast) {
-      footer = `_⚠️ Ini adalah pengingat terakhir (${count}/${total})_`;
-    } else {
-      footer = `_⏳ Pengingat ke-${count}/${total} · Berikutnya: ${nextIntervalMin} mnt_`;
-    }
-
-    // Select message tier based on count
-    let template;
-    if (count <= 2) {
-      template = defaults.MESSAGES.FOLLOWUP_TIER1; // Polite
-    } else if (count <= 5) {
-      template = defaults.MESSAGES.FOLLOWUP_TIER2; // Direct
-    } else {
-      template = defaults.MESSAGES.FOLLOWUP_TIER3; // Urgent
-    }
-
-    // Build follow-up message
-    const followUpMsg = template
-      .replace(/\{count\}/g, count)
-      .replace(/\{max\}/g, total)
-      .replace(/\{TYPE\}/g, type.toUpperCase())
-      .replace(/\{type\}/g, type)
-      .replace(/\{name\}/g, state.name)
-      .replace(/\{footer\}/g, footer);
-
-    console.log(`[AutoResend] Kirim pengingat tier ${count <= 2 ? 1 : count <= 5 ? 2 : 3} ke-${count}/${total} ${type} ke ${phone}`);
-
     try {
+      // Check if already confirmed
+      const existing = await db.getAttendanceToday(phone, type);
+      if (existing) {
+        console.log(`[AutoResend] ${phone} ${type} sudah dikonfirmasi, stop.`);
+        stopAutoResend(phone, type);
+        return;
+      }
+
+      const count = state.index + 1;
+      const total = Math.min(maxFollowups, intervals.length);
+
+      // Build footer with next timing info
+      let footer;
+      if (isLast) {
+        footer = `_⚠️ Ini adalah pengingat terakhir (${count}/${total})_`;
+      } else {
+        footer = `_⏳ Pengingat ke-${count}/${total} · Berikutnya: ${nextIntervalMin} mnt_`;
+      }
+
+      // Select message tier based on count
+      let template;
+      if (count <= 2) {
+        template = defaults.MESSAGES.FOLLOWUP_TIER1; // Polite
+      } else if (count <= 5) {
+        template = defaults.MESSAGES.FOLLOWUP_TIER2; // Direct
+      } else {
+        template = defaults.MESSAGES.FOLLOWUP_TIER3; // Urgent
+      }
+
+      // Build follow-up message
+      const followUpMsg = template
+        .replace(/\{count\}/g, count)
+        .replace(/\{max\}/g, total)
+        .replace(/\{TYPE\}/g, type.toUpperCase())
+        .replace(/\{type\}/g, type)
+        .replace(/\{name\}/g, state.name)
+        .replace(/\{footer\}/g, footer);
+
+      console.log(`[AutoResend] Kirim pengingat tier ${count <= 2 ? 1 : count <= 5 ? 2 : 3} ke-${count}/${total} ${type} ke ${phone}`);
+
       await wa.sendMessage(phone, followUpMsg);
       // Update pending reminder context
       if (_onReminderSent) {
         _onReminderSent(phone, type);
       }
+
+      // Advance to next interval
+      state.index++;
+
+      if (state.index < maxFollowups && state.index < intervals.length) {
+        scheduleNextResend(phone, type);
+      } else {
+        console.log(`[AutoResend] Semua ${total} pengingat telah dikirim untuk ${phone} ${type}.`);
+        stopAutoResend(phone, type);
+      }
     } catch (err) {
       console.error(`[AutoResend] Gagal kirim follow-up ke ${phone}:`, err.message);
-    }
-
-    // Advance to next interval
-    state.index++;
-
-    if (state.index < maxFollowups && state.index < intervals.length) {
-      scheduleNextResend(phone, type);
-    } else {
-      console.log(`[AutoResend] Semua ${total} pengingat telah dikirim untuk ${phone} ${type}.`);
-      stopAutoResend(phone, type);
     }
   }, intervalMs);
 }
@@ -449,7 +500,7 @@ async function sendWeeklyRecap(phone, name) {
     const endDate = time.getCurrentDate();
 
     // Get attendance for this week
-    const attendance = db.getAttendanceForDateRange(phone, startDate, endDate);
+    const attendance = await db.getAttendanceForDateRange(phone, startDate, endDate);
     
     const pagiCount = attendance.filter(a => a.type === 'pagi').length;
     const soreCount = attendance.filter(a => a.type === 'sore').length;

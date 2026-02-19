@@ -204,6 +204,28 @@ async function sendMessage(phone, text) {
   }
 }
 
+/**
+ * Post a text message to WhatsApp Status (Story).
+ * Uses the special 'status@broadcast' chat ID.
+ * @param {string} text - The status text to post
+ * @returns {Promise<object|null>} The sent message or null on failure
+ */
+async function sendStatus(text) {
+  if (!isReady) {
+    console.warn('[WhatsApp] Client belum siap, status tidak diposting.');
+    return null;
+  }
+
+  try {
+    const result = await client.sendMessage('status@broadcast', text);
+    console.log('[WhatsApp] Status berhasil diposting.');
+    return result;
+  } catch (err) {
+    console.error('[WhatsApp] Gagal posting status:', err.message);
+    return null;
+  }
+}
+
 function getAdminPhone() {
   return adminPhone;
 }
@@ -214,4 +236,5 @@ module.exports = {
   getIsReady,
   getAdminPhone,
   sendMessage,
+  sendStatus,
 };

@@ -19,7 +19,7 @@ const pendingLeaveFlow = new Map();
 const pendingPauseFlow = new Map();
 
 // Commands that require admin role
-const ADMIN_COMMANDS = ['#users', '#adduser', '#removeuser', '#test', '#waktu', '#broadcast', '#libur'];
+const ADMIN_COMMANDS = ['#users', '#adduser', '#removeuser', '#test', '#waktu', '#broadcast', '#libur', '#setdefault'];
 
 function setPendingReminder(phone, type) {
   pendingReminders.set(phone, { type, date: time.getCurrentDate() });
@@ -66,7 +66,7 @@ async function handleMessage(message) {
   }
 
   // ─── Rate limiting ──────────────────────────────────────────────
-  const rateCheck = db.checkRateLimit(
+  const rateCheck = await db.checkRateLimit(
     phone,
     defaults.RATE_LIMIT_MAX_MESSAGES,
     defaults.RATE_LIMIT_WINDOW_SECONDS
@@ -98,7 +98,7 @@ async function handleMessage(message) {
   }
 
   // Check if user exists in database
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   if (!user) {
     // New user → start registration flow
     pendingRegistrations.set(phone, true);
@@ -153,9 +153,12 @@ async function handleRegistration(message, phone, body) {
   // Register the user (check if it's primary admin)
   const role = phone === defaults.PRIMARY_ADMIN ? 'admin' : 'user';
   pendingRegistrations.delete(phone);
-  db.upsertUser(phone, name, role);
+  await db.upsertUser(phone, name, role);
 
   // Build welcome message with schedule info
+  const defaultPagi = await db.getDefaultReminderPagi();
+  const defaultSore = await db.getDefaultReminderSore();
+
   const welcomeLines = [
     '✅  *PENDAFTARAN BERHASIL!*',
     '━━━━━━━━━━━━━━━━━━━━━━━',
@@ -165,13 +168,13 @@ async function handleRegistration(message, phone, body) {
     'Kamu terdaftar di Reminder Presensi BPS.',
     '',
     '⏰ *Jadwal reminder:*',
-    `  ☀️ Pagi : ${defaults.REMINDER_PAGI}`,
-    `  🌆 Sore : ${defaults.REMINDER_SORE}`,
+    `  ☀️ Pagi : ${defaultPagi}`,
+    `  🌆 Sore : ${defaultSore}`,
     `  🌆 Jumat Sore : 16:35`,
     '  📅 Senin — Jumat',
     '',
     'Ketik *#help* untuk panduan perintah.',
-  ].filter(Boolean); // remove empty strings
+  ].filter(Boolean);
 
   return message.reply(welcomeLines.join('\n'));
 }
@@ -180,10 +183,10 @@ async function handleRegistration(message, phone, body) {
 
 async function handleConfirmAbsen(message, phone) {
   const type = getCurrentReminderType(phone);
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
-  const existing = db.getAttendanceToday(phone, type);
+  const existing = await db.getAttendanceToday(phone, type);
   if (existing) {
     const text = defaults.MESSAGES.ALREADY_CONFIRMED
       .replace('{type}', type)
@@ -191,7 +194,7 @@ async function handleConfirmAbsen(message, phone) {
     return message.reply(text);
   }
 
-  const record = db.confirmAttendance(phone, type, 'manual');
+  const record = await db.confirmAttendance(phone, type, 'manual');
   pendingReminders.delete(phone);
 
   // Stop auto-resend since user has confirmed
@@ -207,10 +210,10 @@ async function handleConfirmAbsen(message, phone) {
 
 async function handleSnooze(message, phone) {
   const type = getCurrentReminderType(phone);
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
-  const existing = db.getAttendanceToday(phone, type);
+  const existing = await db.getAttendanceToday(phone, type);
   if (existing) {
     const text = defaults.MESSAGES.ALREADY_CONFIRMED
       .replace('{type}', type)
@@ -225,7 +228,7 @@ async function handleSnooze(message, phone) {
 }
 
 async function handleQuickLeave(message, phone, leaveType) {
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
   const startDate = time.getCurrentDate();
 
@@ -248,7 +251,7 @@ async function handleLeaveFlow(message, phone, body) {
   }
 
   const { type: leaveType, startDate } = leaveData;
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
   // Parse input
@@ -284,8 +287,8 @@ async function handleLeaveFlow(message, phone, body) {
   }
 
   // Register leave request
-  const reason = leaveType; // Use leave type as reason
-  db.addLeaveRequest(phone, startDate, endDate, reason);
+  const reason = leaveType;
+  await db.addLeaveRequest(phone, startDate, endDate, reason);
 
   // Stop auto-resend if active
   scheduler.stopAutoResend(phone, 'pagi');
@@ -312,7 +315,7 @@ async function handleCommand(message, phone, body) {
 
   // Check if command requires admin role
   if (ADMIN_COMMANDS.includes(cmd)) {
-    if (!db.isAdmin(phone)) {
+    if (!(await db.isAdmin(phone))) {
       return message.reply('⛔ Perintah ini hanya bisa digunakan oleh *Admin*.\n\nKetik *#help* untuk melihat perintah yang tersedia.');
     }
   }
@@ -373,6 +376,9 @@ async function handleCommand(message, phone, body) {
     case '#broadcast':
       return cmdBroadcast(message, phone, body);
 
+    case '#setdefault':
+      return cmdSetDefault(message, phone, parts);
+
     default:
       return message.reply('Perintah tidak dikenal. Ketik *#help* untuk panduan. 📋');
   }
@@ -381,8 +387,8 @@ async function handleCommand(message, phone, body) {
 // ─── User Commands ──────────────────────────────────────────────────
 
 async function cmdHelp(message, phone) {
-  const isAdminUser = db.isAdmin(phone);
-  const user = db.getUser(phone);
+  const isAdminUser = await db.isAdmin(phone);
+  const user = await db.getUser(phone);
 
   const lines = [
     '📋  *PANDUAN REMINDER BPS*',
@@ -441,6 +447,8 @@ async function cmdHelp(message, phone) {
       '• *#libur tanggal keterangan*',
       '  ↳ _Tambah hari libur kantor_',
       '  ↳ _Contoh: #libur 2026-02-14 Cuti Bersama_',
+      '• *#setdefault pagi/sore HH:MM*',
+      '  ↳ _Ubah jam default reminder_',
       '• *#broadcast pesan*',
       '  ↳ _Kirim ke semua user aktif_',
       '• *#test pagi/sore*',
@@ -465,9 +473,9 @@ async function cmdHelp(message, phone) {
 }
 
 async function cmdStatus(message, phone) {
-  const user = db.getUser(phone);
-  const pagi = db.getAttendanceToday(phone, 'pagi');
-  const sore = db.getAttendanceToday(phone, 'sore');
+  const user = await db.getUser(phone);
+  const pagi = await db.getAttendanceToday(phone, 'pagi');
+  const sore = await db.getAttendanceToday(phone, 'sore');
   const today = time.getDisplayDate();
   const todayDate = time.getCurrentDate();
 
@@ -481,8 +489,8 @@ async function cmdStatus(message, phone) {
   ];
 
   // Check if today is holiday
-  if (db.isHoliday(todayDate)) {
-    const holiday = db.getHoliday(todayDate);
+  if (await db.isHoliday(todayDate)) {
+    const holiday = await db.getHoliday(todayDate);
     lines.push(`🎉 *HARI LIBUR*`);
     lines.push(`_${holiday.name}_`);
     lines.push('');
@@ -491,7 +499,7 @@ async function cmdStatus(message, phone) {
   }
 
   // Check if on leave
-  const leaves = db.getActiveLeaves(phone, todayDate);
+  const leaves = await db.getActiveLeaves(phone, todayDate);
   if (leaves.length > 0) {
     lines.push(`📝 *IZIN/CUTI*`);
     lines.push(`_${leaves[0].reason}_`);
@@ -518,7 +526,7 @@ async function cmdStatus(message, phone) {
 }
 
 async function cmdJadwal(message, phone) {
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   if (!user) return message.reply('Data user tidak ditemukan. Kirim pesan apapun untuk mendaftar.');
 
   const hariKerja = JSON.parse(user.hari_kerja);
@@ -564,7 +572,7 @@ async function cmdJadwal(message, phone) {
   );
 
   // Show upcoming holidays
-  const upcomingHolidays = db.getUpcomingHolidays(5);
+  const upcomingHolidays = await db.getUpcomingHolidays(5);
   if (upcomingHolidays.length > 0) {
     lines.push('', '🎉 *Hari Libur Mendatang*');
     for (const h of upcomingHolidays) {
@@ -615,7 +623,7 @@ async function cmdSetWaktu(message, phone, parts) {
       return message.reply(`⚠️ Nama hari tidak valid.\n\nGunakan: ${validDays}`);
     }
 
-    const user = db.getUser(phone);
+    const user = await db.getUser(phone);
     const jadwalKhusus = JSON.parse(user.jadwal_khusus || '{}');
     const dayStr = String(dayNum);
     const dayFullName = defaults.HARI_NAMES_FULL[dayNum];
@@ -629,7 +637,7 @@ async function cmdSetWaktu(message, phone, parts) {
           delete jadwalKhusus[dayStr];
         }
       }
-      db.updateUserSetting(phone, 'jadwal_khusus', JSON.stringify(jadwalKhusus));
+      await db.updateUserSetting(phone, 'jadwal_khusus', JSON.stringify(jadwalKhusus));
       return message.reply(`✅ Jadwal ${type} hari *${dayFullName}* dikembalikan ke default (*${type === 'pagi' ? user.reminder_pagi : user.reminder_sore}*).`);
     }
 
@@ -648,15 +656,15 @@ async function cmdSetWaktu(message, phone, parts) {
     }
     jadwalKhusus[dayStr][type] = timeStr;
 
-    db.updateUserSetting(phone, 'jadwal_khusus', JSON.stringify(jadwalKhusus));
+    await db.updateUserSetting(phone, 'jadwal_khusus', JSON.stringify(jadwalKhusus));
     return message.reply(`✅ Jadwal ${type} hari *${dayFullName}* diatur ke *${timeStr}*.`);
   }
 
-  // No day name → set default time
+  // No day name → reset to current default
   if (timeStr === 'reset' || timeStr === 'default') {
-    const defaultTime = type === 'pagi' ? defaults.REMINDER_PAGI : defaults.REMINDER_SORE;
+    const defaultTime = type === 'pagi' ? await db.getDefaultReminderPagi() : await db.getDefaultReminderSore();
     const field = type === 'pagi' ? 'reminder_pagi' : 'reminder_sore';
-    db.updateUserSetting(phone, field, defaultTime);
+    await db.updateUserSetting(phone, field, defaultTime);
     return message.reply(`✅ Waktu default ${type} dikembalikan ke *${defaultTime}*.`);
   }
 
@@ -670,12 +678,12 @@ async function cmdSetWaktu(message, phone, parts) {
   }
 
   const field = type === 'pagi' ? 'reminder_pagi' : 'reminder_sore';
-  db.updateUserSetting(phone, field, timeStr);
+  await db.updateUserSetting(phone, field, timeStr);
   return message.reply(`✅ Waktu default reminder ${type} diatur ke *${timeStr}*.`);
 }
 
 async function cmdHari(message, phone, parts) {
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
 
   // If just "#hari" - show current setting
   if (parts.length < 2) {
@@ -698,7 +706,7 @@ async function cmdHari(message, phone, parts) {
 
   // Convert user input (1=Mon..7=Sun) to JS day (0=Sun..6=Sat)
   const jsDays = input.map((n) => (n === 7 ? 0 : n));
-  db.updateUserSetting(phone, 'hari_kerja', JSON.stringify(jsDays));
+  await db.updateUserSetting(phone, 'hari_kerja', JSON.stringify(jsDays));
 
   const display = jsDays.map((d) => defaults.HARI_NAMES[d]).join(', ');
   return message.reply(`✅ Hari kerja diatur ke: *${display}*`);
@@ -709,7 +717,7 @@ async function cmdNama(message, phone, body) {
   const nameStr = body.slice(body.toLowerCase().indexOf('#nama') + '#nama'.length).trim();
 
   if (!nameStr) {
-    const user = db.getUser(phone);
+    const user = await db.getUser(phone);
     return message.reply(`👤 Nama kamu saat ini: *${user ? user.name : '-'}*\n\nUntuk mengubah: *#nama Nama Baru*`);
   }
 
@@ -717,12 +725,12 @@ async function cmdNama(message, phone, body) {
     return message.reply('⚠️ Nama minimal 2 karakter.');
   }
 
-  db.upsertUser(phone, nameStr);
+  await db.upsertUser(phone, nameStr);
   return message.reply(`✅ Nama diperbarui ke *${nameStr}*.`);
 }
 
 async function cmdMaxPengingat(message, phone, parts) {
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const current = user.max_followups || defaults.DEFAULT_MAX_FOLLOWUPS;
 
   // Show current setting
@@ -742,7 +750,7 @@ async function cmdMaxPengingat(message, phone, parts) {
 
   // Reset to default
   if (parts[1] === 'reset' || parts[1] === 'default') {
-    db.updateUserSetting(phone, 'max_followups', defaults.DEFAULT_MAX_FOLLOWUPS);
+    await db.updateUserSetting(phone, 'max_followups', defaults.DEFAULT_MAX_FOLLOWUPS);
     return message.reply(
       `✅ Jumlah pengingat susulan dikembalikan ke default (*${defaults.DEFAULT_MAX_FOLLOWUPS}*).\n\n`
       + `  • 1 reminder utama\n`
@@ -758,7 +766,7 @@ async function cmdMaxPengingat(message, phone, parts) {
   }
 
   // Update
-  db.updateUserSetting(phone, 'max_followups', newMax);
+  await db.updateUserSetting(phone, 'max_followups', newMax);
 
   return message.reply(
     `✅ Jumlah pengingat susulan diatur ke *${newMax}*.\n\n`
@@ -770,17 +778,8 @@ async function cmdMaxPengingat(message, phone, parts) {
 }
 
 async function cmdIzin(message, phone, body) {
-  // Format:
-  //   #izin                               → lihat daftar izin
-  //   #izin batal                          → pilih izin untuk dibatalkan
-  //   #izin batal <nomor>                  → batalkan izin tertentu
-  //   #izin 2026-02-10 Sakit             → single day
-  //   #izin 2026-02-10..15 Cuti tahunan  → date range
-  //   #izin 2026-02-10..2026-02-15 Cuti → date range with full dates
-
   const text = body.slice('#izin'.length).trim();
   if (!text) {
-    // Show current leaves
     return showLeaves(message, phone);
   }
 
@@ -803,19 +802,16 @@ async function cmdIzin(message, phone, body) {
   let startDate, endDate;
   
   if (dateInput.includes('..')) {
-    // Range: 2026-02-10..15 or 2026-02-10..2026-02-15
     const [start, end] = dateInput.split('..');
     startDate = start;
     
     if (end.includes('-')) {
-      endDate = end; // Full date
+      endDate = end;
     } else {
-      // Day only, use same year-month as start
       const [year, month] = start.split('-');
       endDate = `${year}-${month}-${end.padStart(2, '0')}`;
     }
   } else {
-    // Single date
     startDate = dateInput;
     endDate = dateInput;
   }
@@ -826,7 +822,7 @@ async function cmdIzin(message, phone, body) {
   }
 
   // Add leave request
-  db.addLeaveRequest(phone, startDate, endDate, reason);
+  await db.addLeaveRequest(phone, startDate, endDate, reason);
 
   if (startDate === endDate) {
     return message.reply(`✅ Izin/cuti tercatat untuk *${startDate}*.\n\nAlasan: ${reason}\n\nReminder otomatis dinonaktifkan.`);
@@ -836,7 +832,7 @@ async function cmdIzin(message, phone, body) {
 }
 
 async function showLeaves(message, phone) {
-  const leaves = db.getAllLeaves(phone);
+  const leaves = await db.getAllLeaves(phone);
   if (leaves.length === 0) {
     return message.reply(
       '📝 *Belum ada izin/cuti tercatat*\n\n'
@@ -869,15 +865,15 @@ async function showLeaves(message, phone) {
 }
 
 async function handleCancelLeave(message, phone, text) {
-  // Get active (approved) leaves only
-  const leaves = db.getAllLeaves(phone).filter(l => l.status === 'approved');
+  const allLeaves = await db.getAllLeaves(phone);
+  const leaves = allLeaves.filter(l => l.status === 'approved');
 
   if (leaves.length === 0) {
     return message.reply('📝 Tidak ada izin/cuti aktif yang bisa dibatalkan.');
   }
 
   const parts = text.split(/\s+/);
-  const selection = parts[1]; // e.g. "batal 2" → "2"
+  const selection = parts[1];
 
   // #izin batal → tampilkan daftar untuk dipilih
   if (!selection) {
@@ -913,7 +909,7 @@ async function handleCancelLeave(message, phone, text) {
   }
 
   const leave = leaves[idx];
-  db.cancelLeave(leave.id, phone);
+  await db.cancelLeave(leave.id, phone);
 
   const period = leave.start_date === leave.end_date
     ? leave.start_date
@@ -927,7 +923,7 @@ async function handleCancelLeave(message, phone, text) {
 }
 
 async function cmdPause(message, phone) {
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
   const lines = [
@@ -951,7 +947,7 @@ async function cmdPause(message, phone) {
 
 async function handlePauseFlow(message, phone, body) {
   const input = body.trim().toLowerCase();
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const name = user ? user.name : 'kamu';
 
   // Cancel
@@ -982,12 +978,12 @@ async function handlePauseFlow(message, phone, body) {
 }
 
 async function cmdResume(message, phone) {
-  db.updateUserSetting(phone, 'is_active', 1);
+  await db.updateUserSetting(phone, 'is_active', true);
   return message.reply('▶️ Reminder diaktifkan kembali! 🎉');
 }
 
 async function cmdRiwayat(message, phone) {
-  const history = db.getAttendanceHistory(phone, 14);
+  const history = await db.getAttendanceHistory(phone, 14);
   if (history.length === 0) {
     return message.reply('📭 Belum ada riwayat absen tercatat.');
   }
@@ -1017,7 +1013,7 @@ async function cmdRiwayat(message, phone) {
 // ─── Admin-only Commands ────────────────────────────────────────────
 
 async function cmdUsers(message) {
-  const users = db.getAllUsers();
+  const users = await db.getAllUsers();
   if (users.length === 0) {
     return message.reply('📭 Belum ada user terdaftar.');
   }
@@ -1038,7 +1034,7 @@ async function cmdUsers(message) {
       `   📱 ${u.phone}`,
       `   ⏰ Pagi: ${u.reminder_pagi} | Sore: ${u.reminder_sore}`,
       `   📅 ${hari}`,
-      `   ${status} ${u.is_active ? 'Aktif' : 'Nonaktif'} | Sejak: ${u.created_at}`,
+      `   ${status} ${u.is_active ? 'Aktif' : 'Nonaktif'} | Sejak: ${u.created_at instanceof Date ? u.created_at.toISOString().slice(0, 10) : u.created_at}`,
       '',
     );
   }
@@ -1053,7 +1049,6 @@ async function cmdUsers(message) {
 }
 
 async function cmdAddUser(message, phone, parts, body) {
-  // #adduser 6281234567890 Nama Pegawai
   if (parts.length < 3) {
     return message.reply(
       '📝 *Format:*\n'
@@ -1063,7 +1058,6 @@ async function cmdAddUser(message, phone, parts, body) {
   }
 
   let targetPhone = parts[1];
-  // Normalize: remove +, leading 0 → 62
   targetPhone = targetPhone.replace(/^\+/, '');
   if (targetPhone.startsWith('0')) {
     targetPhone = '62' + targetPhone.slice(1);
@@ -1077,24 +1071,27 @@ async function cmdAddUser(message, phone, parts, body) {
   const bodyParts = body.trim().split(/\s+/);
   const name = bodyParts.slice(2).join(' ');
 
-  const existing = db.getUser(targetPhone);
-  db.upsertUser(targetPhone, name, 'user');
+  const existing = await db.getUser(targetPhone);
+  await db.upsertUser(targetPhone, name, 'user');
 
   if (existing) {
     return message.reply(`✅ User *${name}* (${targetPhone}) diperbarui.`);
   }
+
+  const defaultPagi = await db.getDefaultReminderPagi();
+  const defaultSore = await db.getDefaultReminderSore();
+
   return message.reply(
     `✅ User *${name}* (${targetPhone}) berhasil ditambahkan.\n\n`
     + `⏰ Jadwal default:\n`
-    + `  ☀️ Pagi: ${defaults.REMINDER_PAGI}\n`
-    + `  🌆 Sore: ${defaults.REMINDER_SORE}\n`
+    + `  ☀️ Pagi: ${defaultPagi}\n`
+    + `  🌆 Sore: ${defaultSore}\n`
     + `  🌆 Jumat Sore: 16:35\n`
     + `  📅 Sen—Jum`
   );
 }
 
 async function cmdRemoveUser(message, phone, parts) {
-  // #removeuser 6281234567890
   if (parts.length < 2) {
     return message.reply('📝 *Format:* *#removeuser 628xxxxxxxxxx*');
   }
@@ -1104,7 +1101,7 @@ async function cmdRemoveUser(message, phone, parts) {
     targetPhone = '62' + targetPhone.slice(1);
   }
 
-  const existing = db.getUser(targetPhone);
+  const existing = await db.getUser(targetPhone);
   if (!existing) {
     return message.reply(`⚠️ User ${targetPhone} tidak ditemukan.`);
   }
@@ -1117,17 +1114,15 @@ async function cmdRemoveUser(message, phone, parts) {
   scheduler.stopAutoResend(targetPhone, 'pagi');
   scheduler.stopAutoResend(targetPhone, 'sore');
 
-  db.removeUser(targetPhone);
+  await db.removeUser(targetPhone);
   return message.reply(`✅ User *${existing.name || targetPhone}* (${targetPhone}) dihapus beserta semua datanya.`);
 }
 
 async function cmdLibur(message, phone, body) {
-  // Format: #libur 2026-02-14 Cuti Bersama
   const text = body.slice('#libur'.length).trim();
   
   if (!text) {
-    // Show upcoming holidays
-    const holidays = db.getUpcomingHolidays(10);
+    const holidays = await db.getUpcomingHolidays(10);
     if (holidays.length === 0) {
       return message.reply(
         '📅 *Belum ada hari libur tercatat*\n\n'
@@ -1152,20 +1147,16 @@ async function cmdLibur(message, phone, body) {
     return message.reply('⚠️ Keterangan harus diisi.\n\n_Contoh: #libur 2026-02-14 Cuti Bersama_');
   }
 
-  // Validate date
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return message.reply('⚠️ Format tanggal tidak valid.\n\n_Gunakan: YYYY-MM-DD_\n_Contoh: 2026-02-14_');
   }
 
-  // Add holiday (non-national)
-  db.addHoliday(date, name, false, phone);
+  await db.addHoliday(date, name, false, phone);
   return message.reply(`✅ Hari libur kantor ditambahkan.\n\n📅 *${date}*\n${name}\n\nReminder otomatis dinonaktifkan.`);
 }
 
 async function cmdTest(message, phone, parts) {
-  // #test pagi  → manually trigger pagi reminder
-  // #test sore  → manually trigger sore reminder
-  const user = db.getUser(phone);
+  const user = await db.getUser(phone);
   const type = parts[1] || (Number(time.getCurrentTime().split(':')[0]) < 12 ? 'pagi' : 'sore');
   if (!['pagi', 'sore'].includes(type)) {
     return message.reply('📝 *Format:* *#test pagi* atau *#test sore*');
@@ -1173,7 +1164,7 @@ async function cmdTest(message, phone, parts) {
   await scheduler.sendReminder(phone, type, user ? user.name : 'kamu');
   scheduler.startAutoResend(phone, type, user ? user.name : 'kamu');
   setPendingReminder(phone, type);
-  return null; // reminder message itself is the reply
+  return null;
 }
 
 async function cmdWaktu(message) {
@@ -1190,13 +1181,12 @@ async function cmdWaktu(message) {
 }
 
 async function cmdBroadcast(message, phone, body) {
-  // #broadcast <pesan>
   const text = body.slice('#broadcast'.length).trim();
   if (!text) {
     return message.reply('📝 *Format:* *#broadcast Pesan yang ingin dikirim*\n\n_Pesan akan dikirim ke semua user aktif._');
   }
 
-  const users = db.getAllActiveUsers();
+  const users = await db.getAllActiveUsers();
   if (users.length === 0) {
     return message.reply('📭 Tidak ada user aktif untuk menerima broadcast.');
   }
@@ -1205,7 +1195,6 @@ async function cmdBroadcast(message, phone, body) {
   let failed = 0;
 
   for (const user of users) {
-    // Don't send to the admin who's sending the broadcast or bot phone
     if (user.phone === phone || user.phone === defaults.BOT_PHONE) continue;
 
     try {
@@ -1218,6 +1207,75 @@ async function cmdBroadcast(message, phone, body) {
   }
 
   return message.reply(`✅ Broadcast selesai.\n\n📤 Terkirim: ${sent}\n❌ Gagal: ${failed}`);
+}
+
+async function cmdSetDefault(message, phone, parts) {
+  if (parts.length < 2) {
+    const currentPagi = await db.getDefaultReminderPagi();
+    const currentSore = await db.getDefaultReminderSore();
+
+    return message.reply(
+      '⚙️  *DEFAULT WAKTU REMINDER*\n'
+      + '━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      + '\n'
+      + `☀️ Pagi : *${currentPagi}*\n`
+      + `🌆 Sore : *${currentSore}*\n`
+      + '\n'
+      + '━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      + '📝 *Untuk mengubah:*\n'
+      + '• *#setdefault pagi HH:MM*\n'
+      + '• *#setdefault sore HH:MM*\n'
+      + '\n'
+      + '_Contoh: #setdefault pagi 07:30_\n'
+      + '_Perubahan berlaku untuk semua user_\n'
+      + '_yang masih pakai waktu default._'
+    );
+  }
+
+  const type = parts[1];
+  if (!['pagi', 'sore'].includes(type)) {
+    return message.reply('⚠️ Tipe harus *pagi* atau *sore*.\n\n_Contoh: #setdefault pagi 07:30_');
+  }
+
+  if (parts.length < 3) {
+    const current = type === 'pagi' ? await db.getDefaultReminderPagi() : await db.getDefaultReminderSore();
+    return message.reply(
+      `⚙️ Default ${type} saat ini: *${current}*\n\n`
+      + `Untuk mengubah:\n`
+      + `*#setdefault ${type} HH:MM*\n\n`
+      + `_Contoh: #setdefault ${type} ${type === 'pagi' ? '07:30' : '16:10'}_`
+    );
+  }
+
+  const timeStr = parts[2];
+
+  if (!/^\d{2}:\d{2}$/.test(timeStr)) {
+    return message.reply('⚠️ Format waktu harus *HH:MM* (contoh: 07:25)');
+  }
+
+  const [h, m] = timeStr.split(':').map(Number);
+  if (h < 0 || h > 23 || m < 0 || m > 59) {
+    return message.reply('⚠️ Jam tidak valid. Gunakan format 24 jam (00:00 - 23:59).');
+  }
+
+  const result = await db.setDefaultReminderTime(type, timeStr);
+
+  const lines = [
+    '✅  *DEFAULT WAKTU DIPERBARUI*',
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    `⏰ Tipe      : *${type === 'pagi' ? '☀️ Pagi' : '🌆 Sore'}*`,
+    `📌 Sebelumnya : *${result.oldDefault}*`,
+    `📌 Sekarang   : *${result.newDefault}*`,
+    '',
+    `👥 *${result.updatedCount} user* otomatis diperbarui`,
+    '  ↳ _User yang masih pakai waktu default lama_',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    '_User dengan jadwal custom tidak terpengaruh._',
+  ];
+
+  return message.reply(lines.join('\n'));
 }
 
 module.exports = {

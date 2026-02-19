@@ -85,7 +85,7 @@ cleanupLockFiles(authBaseDir);
 let lastLoopCheck = Date.now();
 setInterval(() => {
   const now = Date.now();
-  const delay = now - lastLoopCheck - 1000; // Expected 1000ms, actual delay
+  const delay = now - lastLoopCheck - 1000;
   if (delay > 50) {
     console.warn(`[EventLoop] Blocked for ${delay}ms at ${new Date().toISOString()}`);
   }
@@ -140,85 +140,102 @@ function startHealthServer() {
 
 startHealthServer();
 
-// --- Initialize WhatsApp client ---
-const client = wa.createClient();
-
-// Register message handler
-client.on('message', async (msg) => {
+// --- Initialize database and WhatsApp client ---
+async function boot() {
+  // Connect to PostgreSQL
   try {
-    await handler.handleMessage(msg);
+    await db.connect();
+    console.log('[App] Database connected.');
   } catch (err) {
-    console.error('[Handler] Error:', err.message);
-  }
-});
-
-// Connect scheduler → handler for pending reminder context
-scheduler.onReminderSent((phone, type) => {
-  handler.setPendingReminder(phone, type);
-});
-
-// Connect scheduler → handler for daily cleanup (midnight)
-scheduler.onDailyCleanup(() => {
-  handler.clearPendingStates();
-});
-
-// Start scheduler when WhatsApp is ready
-client.on('ready', () => {
-  // Register primary admin (hardcoded)
-  const primaryAdmin = defaults.PRIMARY_ADMIN;
-  let existingPrimary = db.getUser(primaryAdmin);
-  if (existingPrimary) {
-    db.setAdmin(primaryAdmin);
-  } else {
-    db.upsertUser(primaryAdmin, 'Admin Utama', 'admin');
-  }
-  console.log(`[App] Primary admin registered: ${primaryAdmin}`);
-
-  // Register bot phone (receive-only)
-  const botPhone = defaults.BOT_PHONE;
-  let existingBot = db.getUser(botPhone);
-  if (!existingBot) {
-    db.upsertUser(botPhone, 'Bot Receiver', 'admin');
-    db.updateUserSetting(botPhone, 'is_active', 0); // No reminders for bot
-    console.log(`[App] Bot phone registered: ${botPhone}`);
+    console.error('[App] Failed to connect to database:', err.message);
+    process.exit(1);
   }
 
-  // Register WhatsApp authenticated phone as admin if different
-  const authPhone = wa.getAdminPhone();
-  if (authPhone && authPhone !== primaryAdmin && authPhone !== botPhone) {
-    const existing = db.getUser(authPhone);
-    if (existing) {
-      db.setAdmin(authPhone);
-    } else {
-      db.upsertUser(authPhone, 'Admin', 'admin');
+  const client = wa.createClient();
+
+  // Register message handler
+  client.on('message', async (msg) => {
+    try {
+      await handler.handleMessage(msg);
+    } catch (err) {
+      console.error('[Handler] Error:', err.message);
     }
-    console.log(`[App] WhatsApp auth phone registered as admin: ${authPhone}`);
-  }
+  });
 
-  scheduler.startScheduler();
-  if (time.isSimulated()) {
-    console.log(`[App] Simulated time: ${time.getCurrentTime()} | Date: ${time.getCurrentDate()}`);
-    console.log('[App] Reminder akan trigger saat waktu simulasi cocok dengan jadwal user.');
-  }
+  // Connect scheduler → handler for pending reminder context
+  scheduler.onReminderSent((phone, type) => {
+    handler.setPendingReminder(phone, type);
+  });
+
+  // Connect scheduler → handler for daily cleanup (midnight)
+  scheduler.onDailyCleanup(() => {
+    handler.clearPendingStates();
+  });
+
+  // Start scheduler when WhatsApp is ready
+  client.on('ready', async () => {
+    // Register primary admin (hardcoded)
+    const primaryAdmin = defaults.PRIMARY_ADMIN;
+    let existingPrimary = await db.getUser(primaryAdmin);
+    if (existingPrimary) {
+      await db.setAdmin(primaryAdmin);
+    } else {
+      await db.upsertUser(primaryAdmin, 'Admin Utama', 'admin');
+    }
+    console.log(`[App] Primary admin registered: ${primaryAdmin}`);
+
+    // Register bot phone (receive-only)
+    const botPhone = defaults.BOT_PHONE;
+    let existingBot = await db.getUser(botPhone);
+    if (!existingBot) {
+      await db.upsertUser(botPhone, 'Bot Receiver', 'admin');
+      await db.updateUserSetting(botPhone, 'is_active', false);
+      console.log(`[App] Bot phone registered: ${botPhone}`);
+    }
+
+    // Register WhatsApp authenticated phone as admin if different
+    const authPhone = wa.getAdminPhone();
+    if (authPhone && authPhone !== primaryAdmin && authPhone !== botPhone) {
+      const existing = await db.getUser(authPhone);
+      if (existing) {
+        await db.setAdmin(authPhone);
+      } else {
+        await db.upsertUser(authPhone, 'Admin', 'admin');
+      }
+      console.log(`[App] WhatsApp auth phone registered as admin: ${authPhone}`);
+    }
+
+    scheduler.startScheduler();
+    if (time.isSimulated()) {
+      console.log(`[App] Simulated time: ${time.getCurrentTime()} | Date: ${time.getCurrentDate()}`);
+      console.log('[App] Reminder akan trigger saat waktu simulasi cocok dengan jadwal user.');
+    }
+  });
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log('\n[App] Shutting down...');
+    scheduler.stopScheduler();
+    
+    if (healthServer) {
+      healthServer.close(() => {
+        console.log('[Health] HTTP server closed.');
+      });
+    }
+    
+    await client.destroy();
+    await db.close();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Start the client
+  client.initialize();
+}
+
+boot().catch((err) => {
+  console.error('[App] Boot failed:', err);
+  process.exit(1);
 });
-
-// Graceful shutdown
-const shutdown = async () => {
-  console.log('\n[App] Shutting down...');
-  scheduler.stopScheduler();
-  
-  if (healthServer) {
-    healthServer.close(() => {
-      console.log('[Health] HTTP server closed.');
-    });
-  }
-  
-  await client.destroy();
-  process.exit(0);
-};
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
-// Start the client
-client.initialize();

@@ -1,12 +1,12 @@
 # Reminder Presensi BPS Kalimantan Utara - WhatsApp Bot
 
 ## Overview
-Bot WhatsApp untuk mengirim reminder presensi (absen pagi & sore) kepada pegawai BPS Provinsi Kalimantan Utara. Dibangun menggunakan whatsapp-web.js dengan database SQLite dan fitur-fitur enterprise-ready.
+Bot WhatsApp untuk mengirim reminder presensi (absen pagi & sore) kepada pegawai BPS Provinsi Kalimantan Utara. Dibangun menggunakan whatsapp-web.js dengan database PostgreSQL dan fitur-fitur enterprise-ready.
 
 ## Tech Stack
 - **Runtime**: Node.js v20
 - **WhatsApp**: whatsapp-web.js v1.34.6 (Puppeteer-based)
-- **Database**: SQLite via better-sqlite3
+- **Database**: PostgreSQL 16 via pg (node-postgres)
 - **Scheduler**: node-cron v4
 - **Auth**: LocalAuth (session tersimpan di `.wwebjs_auth/`)
 - **Deployment**: Docker + Docker Compose
@@ -20,19 +20,21 @@ src/
 │ ├── defaults.js # Config, message templates, admin numbers
 │ └── time.js # Time utility (real & simulated mode)
 ├── db/
-│ └── database.js # SQLite (users, attendance, leave, holidays, rate limit)
+│ └── database.js # PostgreSQL (users, attendance, leave, holidays, rate limit)
 └── modules/
  ├── whatsapp.js # WhatsApp client, auto-reconnect, notifications
  ├── scheduler.js # Reminder scheduling, auto-resend, weekly recap, backup
  ├── handler.js # Command handler, registration flow, rate limiting
  └── holiday.js # Holiday API client (libur.deno.dev)
+scripts/
+├── import-users.js # Bulk import users from CSV/TXT
+└── migrate-sqlite-to-pg.js # One-time migration from SQLite to PostgreSQL
 data/
-├── reminder.db # SQLite database (auto-created)
-└── backups/ # Daily database backups
+└── backups/ # Daily pg_dump backups
 ```
 
 ## Architecture Flow
-1. **Boot**: Parse CLI → configure time → start health server → create WhatsApp client
+1. **Boot**: Parse CLI → configure time → start health server → connect PostgreSQL → create WhatsApp client
 2. **Auth**: QR code ditampilkan di terminal, scan dengan WhatsApp
 3. **Registration**: User baru diminta kirim nama lengkap (pesan personal)
 4. **Scheduler**: Saat client `ready`, aktifkan scheduler, backup, holiday sync
@@ -48,6 +50,7 @@ data/
 - **holidays**: date (PK), name, is_national, created_by
 - **snooze_state**: phone, date, type, count
 - **rate_limit**: phone, last_message_at, message_count
+- **settings**: key (PK), value, updated_at — Menyimpan konfigurasi dinamis (default_reminder_pagi, default_reminder_sore)
 
 ## Key Features
 
@@ -120,14 +123,22 @@ data/
   - Bot reconnected (setelah recovery)
 
 ### 10. Daily Database Backup
-- Otomatis backup `reminder.db` setiap hari jam 2 AM WITA
-- Simpan ke `data/backups/` dengan timestamp
+- Otomatis backup via `pg_dump` setiap hari jam 2 AM WITA
+- Simpan ke `data/backups/` sebagai `.sql` dengan timestamp
 - Auto-cleanup: hapus backup > 7 hari
 
 ### 11. Rate Limiting
 - Max 10 messages per 60 seconds per user
 - Cegah spam dan abuse
 - Auto-reset setelah window expired
+
+### 12. WhatsApp Status (Story)
+- Otomatis posting WhatsApp Status 2x sehari pada jam default reminder
+- **Pagi**: Saat jam `default_reminder_pagi` (default 07:25)
+- **Sore**: Saat jam `default_reminder_sore` (default 16:05)
+- Skip otomatis pada hari libur dan weekend
+- Status di-post hanya 1x per type per hari (dedup)
+- Menggunakan `status@broadcast` via whatsapp-web.js
 
 ## Admin Configuration
 - **Primary Admin**: `6285155228104` (can send & receive, full permissions)
@@ -159,6 +170,7 @@ data/
 - `#users` — Daftar semua user
 - `#adduser 628xxx Nama` — Tambah user
 - `#removeuser 628xxx` — Hapus user
+- `#setdefault pagi/sore HH:MM` — Ubah jam default reminder (berlaku untuk semua user yang pakai waktu default)
 - `#libur [tanggal keterangan]` — Tambah/lihat libur kantor
 - `#broadcast pesan` — Broadcast ke semua
 - `#test pagi/sore` — Trigger manual
@@ -188,14 +200,16 @@ node src/index.js --time 16:34 --day 5 --port 3001
 ```
 
 ## Environment Variables
+- `DATABASE_URL` — PostgreSQL connection string (default: `postgresql://reminder:reminder_secret@localhost:5432/reminder`)
 - `PUPPETEER_EXECUTABLE_PATH` — Path to Chromium (auto-set in Docker)
 - `TZ` — Timezone (set to Asia/Makassar)
 - `PORT` — Health check port (default: 3000)
 
 ## Persistent Data (Docker Volumes)
+- `pgdata` — PostgreSQL data (named Docker volume)
 - `.wwebjs_auth/` — WhatsApp session (persist login)
 - `.wwebjs_cache/` — WhatsApp cache (faster reconnect)
-- `data/` — SQLite database + backups
+- `data/` — pg_dump backups
 
 ## Cron Jobs (Automated Tasks)
 - **Every minute**: Check reminders (skip if holiday/leave/weekend)
@@ -206,12 +220,13 @@ node src/index.js --time 16:34 --day 5 --port 3001
 ## Important Notes
 - Jangan commit `.wwebjs_auth/`, `.wwebjs_cache/`, `data/` (berisi sensitive data)
 - `getCurrentDate()` menggunakan waktu lokal (WITA), bukan UTC
-- Semua async functions di scheduler harus di-`await`
+- Semua database functions bersifat `async` — selalu gunakan `await`
 - Auto-resend timers di memory (hilang saat restart) tapi scheduler re-trigger otomatis
 - `pendingRegistrations` Map hilang saat restart; user kirim ulang untuk registrasi
 - Primary admin & bot phone di-hardcode di `defaults.js`
 - WhatsApp authenticated phone otomatis jadi admin
 - Health check berguna untuk uptime monitoring dan container orchestration
+- PostgreSQL harus running sebelum bot start (diatur via `depends_on` + healthcheck di docker-compose)
 
 ## Troubleshooting
 
@@ -231,7 +246,7 @@ node src/index.js --time 16:34 --day 5 --port 3001
 - Pastikan tidak ada session ganda (logout di device lain)
 
 ### Database corrupt
-- Restore dari backup: `cp data/backups/reminder-*.db data/reminder.db`
+- Restore dari backup: `psql "$DATABASE_URL" < data/backups/reminder-YYYY-MM-DDTHH-MM-SS.sql`
 - Restart: `docker compose restart`
 
 ## API Integration
@@ -250,14 +265,15 @@ node src/index.js --time 16:34 --day 5 --port 3001
 - Rate limiting: max 10 msg/60s per user
 - Admin-only commands protected by role check
 - No API keys exposed (holiday API is public)
-- SQLite database di volume terpisah
+- PostgreSQL database di named volume terpisah
 
 ## Performance
 - Fibonacci intervals mencegah spam (escalating delays)
 - Rate limiting pada handler level
-- WAL mode untuk concurrent reads
+- Connection pooling via pg Pool
 - Auto-cleanup old data (snooze, backups)
 
 ## Version History
 - **v1.0.0**: Initial release (basic reminders)
 - **v2.0.0**: Enterprise features (leave, holidays, auto-reconnect, health check, backup, weekly recap, rate limiting, tiered messages)
+- **v3.0.0**: Database migration from SQLite to PostgreSQL (async, connection pooling, pg_dump backups)

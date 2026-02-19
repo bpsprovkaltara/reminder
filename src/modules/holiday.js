@@ -115,7 +115,7 @@ async function syncHolidaysToDb(db) {
     const allHolidays = [...currentYearHolidays, ...nextYearHolidays];
     
     if (allHolidays.length > 0) {
-      db.syncNationalHolidays(allHolidays);
+      await db.syncNationalHolidays(allHolidays);
       console.log(`[Holiday API] Synced ${allHolidays.length} national holidays to database`);
     }
     

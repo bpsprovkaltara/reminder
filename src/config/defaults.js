@@ -245,6 +245,35 @@ module.exports = {
       'Silakan tunggu *{seconds} detik* lagi.',
     ].join('\n'),
 
+    // ─── WhatsApp Status (Story) ─────────────────────────────────────
+    STATUS_PAGI: [
+      '☀️ *ABSEN PAGI*',
+      '━━━━━━━━━━━━━━━━━',
+      '',
+      'Selamat pagi, rekan BPS! 👋',
+      '',
+      'Jangan lupa absen kehadiran',
+      'pagi ini ya. Semangat! 💪',
+      '',
+      '📱 Buka Presensi BPS sekarang.',
+      '',
+      '📅 {date}  ⏰ {time}',
+    ].join('\n'),
+
+    STATUS_SORE: [
+      '🌆 *ABSEN SORE*',
+      '━━━━━━━━━━━━━━━━━',
+      '',
+      'Hai rekan BPS! 🏠',
+      '',
+      'Sudah waktunya pulang.',
+      'Jangan lupa absen kepulangan!',
+      '',
+      '📱 Buka Presensi BPS sekarang.',
+      '',
+      '📅 {date}  ⏰ {time}',
+    ].join('\n'),
+
     // ─── System notifications ─────────────────────────────────────────
     BOT_STARTED: [
       '✅ *Bot Online*',

@@ -1,30 +1,55 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reminder-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: reminder
+      POSTGRES_USER: reminder
+      POSTGRES_PASSWORD: reminder_secret
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    networks:
+      - proxy_network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reminder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   reminder-bot:
     build: .
     image: bpsprovkaltara/reminder-presensi-bps:latest
     container_name: bpsprovkaltara-reminder-presensi-bps
     restart: unless-stopped
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     ports:
-      # Health check endpoint
       - "3000:3000"
 
     volumes:
-      # WhatsApp session (persist login across restarts)
       - ./.wwebjs_auth:/app/.wwebjs_auth
-      # WhatsApp cache (speeds up reconnection)
       - ./.wwebjs_cache:/app/.wwebjs_cache
-      # SQLite database (users, attendance logs)
       - ./data:/app/data
 
     environment:
-      # Timezone WITA — penting agar jadwal reminder sesuai
       - TZ=Asia/Makassar
+      - DATABASE_URL=postgresql://reminder:reminder_secret@postgres:5432/reminder
 
-    # Chromium needs more shared memory than Docker's default 64MB
     shm_size: '512mb'
-
-    # Give the bot time to gracefully disconnect WhatsApp on stop
     stop_grace_period: 15s
 
     networks:
@@ -36,7 +61,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
+volumes:
+  pgdata:
+
 networks:
   proxy_network:
     external: true
-

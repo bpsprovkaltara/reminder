@@ -58,6 +58,9 @@ if (!filePath) {
 ║    node scripts/import-users.js data/pegawai.csv     ║
 ║    node scripts/import-users.js data/list.txt        ║
 ║                                                      ║
+║  Environment:                                        ║
+║    DATABASE_URL  PostgreSQL connection string         ║
+║                                                      ║
 ╚══════════════════════════════════════════════════════╝
 `);
   process.exit(1);
@@ -65,23 +68,17 @@ if (!filePath) {
 
 // ─── Phone Number Normalization ───────────────────────────────────
 function normalizePhone(phone) {
-  // Hapus spasi, tanda hubung, titik, kurung
   let cleaned = phone.replace(/[\s\-\.\(\)\+]/g, '');
 
-  // Validasi: hanya angka
   if (!/^\d+$/.test(cleaned)) return null;
 
-  // Konversi format
   if (cleaned.startsWith('08')) {
     cleaned = '62' + cleaned.slice(1);
   } else if (cleaned.startsWith('8') && cleaned.length >= 10) {
     cleaned = '62' + cleaned;
   }
 
-  // Validasi panjang (minimal 62 + 9 digit = 11, max 62 + 13 digit = 15)
   if (cleaned.length < 11 || cleaned.length > 15) return null;
-
-  // Harus diawali 62
   if (!cleaned.startsWith('62')) return null;
 
   return cleaned;
@@ -89,11 +86,9 @@ function normalizePhone(phone) {
 
 // ─── Parse Line ───────────────────────────────────────────────────
 function parseLine(line) {
-  // Skip baris kosong dan komentar
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return null;
 
-  // Skip header (jika baris pertama mengandung kata "nama" dan "nomor/hp/phone")
   const lower = trimmed.toLowerCase();
   if (lower.includes('nama') && (lower.includes('nomor') || lower.includes('hp') || lower.includes('phone') || lower.includes('telepon'))) {
     return null;
@@ -101,12 +96,9 @@ function parseLine(line) {
 
   let name, phone;
 
-  // Coba parsing dengan berbagai delimiter
-  // 1. Comma: "Nama,08xxx"
   if (trimmed.includes(',')) {
     const parts = trimmed.split(',').map(p => p.trim());
     if (parts.length >= 2) {
-      // Deteksi mana nama dan mana nomor
       const [a, b] = parts;
       if (/^\+?\d[\d\s\-\.()]+$/.test(b.replace(/\s/g, ''))) {
         name = a;
@@ -119,9 +111,7 @@ function parseLine(line) {
         phone = b;
       }
     }
-  }
-  // 2. Semicolon: "Nama;08xxx"
-  else if (trimmed.includes(';')) {
+  } else if (trimmed.includes(';')) {
     const parts = trimmed.split(';').map(p => p.trim());
     if (parts.length >= 2) {
       const [a, b] = parts;
@@ -133,9 +123,7 @@ function parseLine(line) {
         phone = a;
       }
     }
-  }
-  // 3. Dash separator: "Nama - 08xxx"
-  else if (trimmed.includes(' - ')) {
+  } else if (trimmed.includes(' - ')) {
     const parts = trimmed.split(' - ').map(p => p.trim());
     if (parts.length >= 2) {
       const [a, b] = parts;
@@ -147,9 +135,7 @@ function parseLine(line) {
         phone = a;
       }
     }
-  }
-  // 4. Tab: "Nama\t08xxx"
-  else if (trimmed.includes('\t')) {
+  } else if (trimmed.includes('\t')) {
     const parts = trimmed.split('\t').map(p => p.trim()).filter(Boolean);
     if (parts.length >= 2) {
       const [a, b] = parts;
@@ -161,15 +147,12 @@ function parseLine(line) {
         phone = a;
       }
     }
-  }
-  // 5. Space-separated: deteksi nomor di akhir
-  else {
+  } else {
     const match = trimmed.match(/^(.+?)\s+([\+]?\d[\d\s\-\.()]{8,})$/);
     if (match) {
       name = match[1].trim();
       phone = match[2].trim();
     } else {
-      // Coba deteksi nomor di awal
       const match2 = trimmed.match(/^([\+]?\d[\d\s\-\.()]{8,})\s+(.+)$/);
       if (match2) {
         phone = match2[1].trim();
@@ -180,7 +163,6 @@ function parseLine(line) {
 
   if (!name || !phone) return null;
 
-  // Clean name
   name = name.replace(/^["']|["']$/g, '').trim();
   phone = phone.replace(/^["']|["']$/g, '').trim();
 
@@ -188,11 +170,19 @@ function parseLine(line) {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────
-function main() {
+async function main() {
   const resolvedPath = path.resolve(filePath);
 
   if (!fs.existsSync(resolvedPath)) {
     console.error(`❌ File tidak ditemukan: ${resolvedPath}`);
+    process.exit(1);
+  }
+
+  // Connect to PostgreSQL
+  try {
+    await db.connect();
+  } catch (err) {
+    console.error('❌ Gagal koneksi ke database:', err.message);
     process.exit(1);
   }
 
@@ -223,7 +213,6 @@ function main() {
     const lineNum = i + 1;
     const line = lines[i];
 
-    // Parse line
     const parsed = parseLine(line);
     if (!parsed) {
       if (line.trim() && !line.trim().startsWith('#') && !line.trim().startsWith('//')) {
@@ -236,37 +225,33 @@ function main() {
       continue;
     }
 
-    // Normalize phone
     const normalizedPhone = normalizePhone(parsed.phone);
     if (!normalizedPhone) {
       results.errors.push({ line: lineNum, text: line.trim(), reason: `Nomor HP tidak valid: "${parsed.phone}"` });
       continue;
     }
 
-    // Check duplicate in file
     if (seenPhones.has(normalizedPhone)) {
       results.duplicates.push({ line: lineNum, name: parsed.name, phone: normalizedPhone });
       continue;
     }
     seenPhones.add(normalizedPhone);
 
-    // Validate name
     if (parsed.name.length < 2) {
       results.errors.push({ line: lineNum, text: line.trim(), reason: 'Nama terlalu pendek' });
       continue;
     }
 
     // Check if user already exists in DB
-    const existing = db.getUser(normalizedPhone);
+    const existing = await db.getUser(normalizedPhone);
     if (existing) {
       results.skipped.push({ line: lineNum, name: parsed.name, phone: normalizedPhone, existingName: existing.name });
       continue;
     }
 
-    // Insert user
     if (!dryRun) {
       try {
-        db.upsertUser(normalizedPhone, parsed.name, role);
+        await db.upsertUser(normalizedPhone, parsed.name, role);
         results.success.push({ line: lineNum, name: parsed.name, phone: normalizedPhone });
       } catch (err) {
         results.errors.push({ line: lineNum, text: line.trim(), reason: err.message });
@@ -325,6 +310,12 @@ function main() {
   }
 
   console.log('');
+
+  // Close database connection
+  await db.close();
 }
 
-main();
+main().catch((err) => {
+  console.error('❌ Error:', err.message);
+  process.exit(1);
+});
