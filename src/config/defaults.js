@@ -33,6 +33,10 @@ module.exports = {
   BACKUP_HOUR: 2, // Daily backup at 2 AM WITA
   BACKUP_MINUTE: 0,
 
+  // Daily health report to admin
+  HEALTH_REPORT_HOUR: 6, // Send at 6 AM WITA (before work starts)
+  HEALTH_REPORT_MINUTE: 0,
+
   // Holiday API sync
   HOLIDAY_SYNC_ENABLED: true,
 
@@ -300,6 +304,28 @@ module.exports = {
       'Waktu: {time}',
       '',
       '_Layanan kembali normal._',
+    ].join('\n'),
+
+    DAILY_HEALTH_REPORT: [
+      '📋 *LAPORAN HARIAN BOT*',
+      '━━━━━━━━━━━━━━━━━━━━━━━',
+      '',
+      '📅 Tanggal  : *{date}*',
+      '⏰ Waktu    : *{time}*',
+      '',
+      '🟢 *Status Sistem*',
+      '  WhatsApp : {wa_status}',
+      '  Database : {db_status}',
+      '  Uptime   : {uptime}',
+      '',
+      '👥 *Data User*',
+      '  Total user   : {total_users}',
+      '  User aktif   : {active_users}',
+      '  Sedang cuti  : {on_leave}',
+      '',
+      '{attendance_section}',
+      '━━━━━━━━━━━━━━━━━━━━━━━',
+      '_Laporan otomatis setiap hari pukul {report_time} WITA_',
     ].join('\n'),
   },
 

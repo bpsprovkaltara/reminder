@@ -18,13 +18,15 @@ RUN npm ci --omit=dev
 FROM node:20-bookworm-slim
 
 # Install system Chromium + fonts + dumb-init + pg client for backups
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Cache mounts keep downloaded .deb files across builds so re-installs are fast
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-freefont-ttf \
     fonts-noto-color-emoji \
     dumb-init \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+    postgresql-client
 
 # Configure Puppeteer to use system Chromium (not bundled)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true

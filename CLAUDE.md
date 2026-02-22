@@ -122,17 +122,26 @@ data/
   - Bot stopped (disconnect)
   - Bot reconnected (setelah recovery)
 
-### 10. Daily Database Backup
+### 10. Daily Health Report to Admin
+- Otomatis kirim laporan status bot ke primary admin setiap hari pukul 06:00 WITA
+- Isi laporan:
+  - Status sistem (WhatsApp, Database, Uptime)
+  - Data user (total, aktif, sedang cuti)
+  - Ringkasan absensi kemarin (pagi & sore)
+- Skip info absensi jika kemarin weekend atau libur
+- Konfigurasi: `HEALTH_REPORT_HOUR` dan `HEALTH_REPORT_MINUTE` di `defaults.js`
+
+### 11. Daily Database Backup
 - Otomatis backup via `pg_dump` setiap hari jam 2 AM WITA
 - Simpan ke `data/backups/` sebagai `.sql` dengan timestamp
 - Auto-cleanup: hapus backup > 7 hari
 
-### 11. Rate Limiting
+### 12. Rate Limiting
 - Max 10 messages per 60 seconds per user
 - Cegah spam dan abuse
 - Auto-reset setelah window expired
 
-### 12. WhatsApp Status (Story)
+### 13. WhatsApp Status (Story)
 - Otomatis posting WhatsApp Status 2x sehari pada jam default reminder
 - **Pagi**: Saat jam `default_reminder_pagi` (default 07:25)
 - **Sore**: Saat jam `default_reminder_sore` (default 16:05)
@@ -216,6 +225,7 @@ node src/index.js --time 16:34 --day 5 --port 3001
 - **Daily 00:00**: Cleanup snooze state & auto-resend timers
 - **Daily 02:00**: Database backup
 - **Daily 03:00**: Sync national holidays from API
+- **Daily 06:00**: Kirim laporan harian (health report) ke admin
 
 ## Important Notes
 - Jangan commit `.wwebjs_auth/`, `.wwebjs_cache/`, `data/` (berisi sensitive data)

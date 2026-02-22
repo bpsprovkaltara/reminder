@@ -63,6 +63,15 @@ function startScheduler() {
   });
   activeJobs.set('backup', backup);
 
+  // Daily health report to admin
+  const healthReportCron = `${defaults.HEALTH_REPORT_MINUTE} ${defaults.HEALTH_REPORT_HOUR} * * *`;
+  const healthReport = cron.schedule(healthReportCron, () => {
+    sendDailyHealthReport().catch((err) => {
+      console.error('[Scheduler] Gagal kirim health report:', err.message);
+    });
+  });
+  activeJobs.set('health-report', healthReport);
+
   // Sync national holidays daily at 3 AM
   if (defaults.HOLIDAY_SYNC_ENABLED) {
     const holidaySync = cron.schedule('0 3 * * *', async () => {
@@ -538,6 +547,88 @@ async function sendWeeklyRecap(phone, name) {
   }
 }
 
+// ─── Daily health report ────────────────────────────────────────────
+
+/**
+ * Send daily health/status report to primary admin.
+ * Includes: system status, user stats, yesterday's attendance summary.
+ */
+async function sendDailyHealthReport() {
+  const currentDate = time.getCurrentDate();
+  const currentTime = time.getCurrentTime();
+
+  // System status
+  const waStatus = wa.getIsReady() ? '✅ Connected' : '❌ Disconnected';
+
+  let dbStatus = '❌ Error';
+  try {
+    await db.query('SELECT 1');
+    dbStatus = '✅ Connected';
+  } catch {
+    dbStatus = '❌ Disconnected';
+  }
+
+  // Format uptime
+  const uptimeSec = Math.floor(process.uptime());
+  const days = Math.floor(uptimeSec / 86400);
+  const hours = Math.floor((uptimeSec % 86400) / 3600);
+  const minutes = Math.floor((uptimeSec % 3600) / 60);
+  const uptimeStr = days > 0
+    ? `${days}h ${hours}j ${minutes}m`
+    : `${hours}j ${minutes}m`;
+
+  // User stats
+  const allUsers = await db.getAllUsers();
+  const activeUsers = allUsers.filter((u) => u.is_active);
+  const leavePhonesSet = await db.getActiveLeavePhones(currentDate);
+
+  // Yesterday's attendance
+  const yesterday = new Date(currentDate + 'T12:00:00');
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  const yesterdayDay = yesterday.getDay();
+
+  let attendanceSection = '';
+  if (yesterdayDay >= 1 && yesterdayDay <= 5) {
+    const isYesterdayHoliday = await db.isHoliday(yesterdayStr);
+    if (!isYesterdayHoliday) {
+      const summary = await db.getWeeklyAttendanceSummary(yesterdayStr, yesterdayStr);
+      const totalExpected = summary.length;
+      const pagiDone = summary.filter((s) => Number(s.pagi_count) > 0).length;
+      const soreDone = summary.filter((s) => Number(s.sore_count) > 0).length;
+
+      const dayName = defaults.HARI_NAMES_FULL[yesterdayDay];
+      attendanceSection = [
+        `📊 *Absensi Kemarin* (${dayName}, ${yesterdayStr})`,
+        `  Pagi  : ${pagiDone}/${totalExpected} user ✅`,
+        `  Sore  : ${soreDone}/${totalExpected} user ✅`,
+      ].join('\n');
+    } else {
+      const holidayInfo = await db.getHoliday(yesterdayStr);
+      attendanceSection = `📊 *Kemarin libur* (${holidayInfo.name})`;
+    }
+  } else {
+    attendanceSection = '📊 *Kemarin weekend* — tidak ada absensi';
+  }
+
+  const reportTime = `${String(defaults.HEALTH_REPORT_HOUR).padStart(2, '0')}:${String(defaults.HEALTH_REPORT_MINUTE).padStart(2, '0')}`;
+
+  const message = defaults.MESSAGES.DAILY_HEALTH_REPORT
+    .replace(/\{date\}/g, currentDate)
+    .replace(/\{time\}/g, currentTime)
+    .replace(/\{wa_status\}/g, waStatus)
+    .replace(/\{db_status\}/g, dbStatus)
+    .replace(/\{uptime\}/g, uptimeStr)
+    .replace(/\{total_users\}/g, allUsers.length)
+    .replace(/\{active_users\}/g, activeUsers.length)
+    .replace(/\{on_leave\}/g, leavePhonesSet.size)
+    .replace(/\{attendance_section\}/g, attendanceSection)
+    .replace(/\{report_time\}/g, reportTime);
+
+  await wa.sendMessage(defaults.PRIMARY_ADMIN, message);
+  console.log(`[HealthReport] Laporan harian dikirim ke admin (${currentDate} ${currentTime}).`);
+}
+
 function stopScheduler() {
   for (const [name, job] of activeJobs) {
     job.stop();
@@ -556,6 +647,7 @@ module.exports = {
   stopAutoResend,
   clearAllAutoResend,
   isAutoResendActive,
+  sendDailyHealthReport,
   onReminderSent,
   onDailyCleanup,
 };
