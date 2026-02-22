@@ -51,8 +51,9 @@ function clearPendingStates() {
 }
 
 async function handleMessage(message) {
-  // Only handle private messages (not groups)
+  // Only handle private messages (not groups or status broadcasts)
   if (message.from.endsWith('@g.us')) return;
+  if (message.from === 'status@broadcast') return;
 
   const body = message.body.trim();
 
